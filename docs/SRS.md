@@ -1,7 +1,9 @@
 # SRS: MyOwnTMS v1.1 — локальная TMS с GitLab Issues
 
 **Статус документа:** baseline v1.0 подтверждён чтением исходного кода;
-возможности v1.1 запланированы, но ещё не реализованы и не протестированы.
+test foundation, SQLite migrations, GitLab API boundary, project bootstrap и
+resumable publish из `TASK-GL-001`–004 реализованы локально, остальные
+возможности v1.1 запланированы.
 
 **Дата актуализации:** 2026-11-25
 
@@ -55,9 +57,9 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 - PySide6 GUI, SQLAlchemy и SQLite.
 - Упаковка Windows EXE через PyInstaller.
 
-Этот перечень подтверждён чтением исходного кода. В текущем репозитории нет
-автоматизированного тестового контура, поэтому runtime/EXE acceptance не
-считается выполненным.
+Этот перечень подтверждён чтением исходного кода. Добавленный test suite
+проверяет migrations и GitLab HTTP boundary, но полный runtime/GUI/EXE baseline
+ещё не покрыт и acceptance не считается выполненным.
 
 ### In-Scope v1.1
 
@@ -282,7 +284,12 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 
 ## Data and Interfaces
 
-### Planned local entities
+### Local entities for v1.1
+
+Таблицы и ORM-модели созданы в `TASK-GL-001`; validated project-profile и
+label-bootstrap service добавлен в `TASK-GL-003`; managed block codec и
+resumable publish service добавлены в `TASK-GL-004`. Sync service добавляется
+следующей задачей.
 
 - `GitLabProject`: display/customer name, GitLab project ID/path/web URL,
   visibility, active flag, labels readiness timestamps.
@@ -307,8 +314,14 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
   <https://docs.gitlab.com/api/project_markdown_uploads/>
 - Labels:
   <https://docs.gitlab.com/api/labels/>
+- Projects:
+  <https://docs.gitlab.com/api/projects/>
 - Offline Self-Managed guidance:
   <https://docs.gitlab.com/topics/offline/quick_start_guide/>
+- HTTPX SSL, timeouts и mock transports:
+  <https://www.python-httpx.org/advanced/ssl/>,
+  <https://www.python-httpx.org/advanced/timeouts/>,
+  <https://www.python-httpx.org/advanced/transports/>.
 
 ## Edge Cases and Failure Modes
 
@@ -337,10 +350,10 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 |---|---|---|
 | TASK-DOC-001 | SRS, CONTEXT и implementation brief | Implemented locally |
 | TASK-SEC-001 | Runtime/user data больше не отслеживаются Git | Ready for clean initial commit; remote NOT CONFIGURED |
-| TASK-GL-001 | Test foundation и безопасные SQLite migrations | Planned |
-| TASK-GL-002 | GitLab API client, TLS и session-only token | Planned |
-| TASK-GL-003 | Project profiles и label bootstrap | Planned |
-| TASK-GL-004 | Resumable publish и image uploads | Planned |
+| TASK-GL-001 | Test foundation и безопасные SQLite migrations | Implemented locally; focused tests PASS |
+| TASK-GL-002 | GitLab API client, TLS и session-only token | Implemented locally; MockTransport tests PASS |
+| TASK-GL-003 | Project profiles и label bootstrap | Implemented locally; service/API tests PASS |
+| TASK-GL-004 | Resumable publish и image uploads | Implemented locally; focused tests PASS |
 | TASK-GL-005 | Pull/push и field-level conflicts | Planned |
 | TASK-GL-006 | PySide6 UX интеграции | Planned |
 | TASK-GL-007 | Windows package и LAN acceptance | Planned |
@@ -373,8 +386,14 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 
 Текущий статус: clean import подготовлен без старой `.git`; локальные
 `TASK-SEC-001` denylist и redacted worktree/history secret scan выполнены
-успешно. Commit, remote и push: **NOT RUN**. Все GitLab, LAN, EXE и остальные
-v1.1 автоматические проверки: **NOT RUN**.
+успешно. `TASK-GL-001`: focused migration tests на временных SQLite DB —
+**6 passed**. `TASK-GL-002`: `httpx.MockTransport` API/TLS/error tests —
+**38 passed**. `TASK-GL-003`: focused project-profile/bootstrap tests —
+**14 passed**. `TASK-GL-004`: focused codec/publish/API tests — **47 passed**;
+полный локальный suite — **67 passed**; compileall — **PASS**.
+Реальная legacy/runtime DB не использовалась. Commit, remote, push, GitLab CI,
+GUI settings smoke, реальный GitLab/TLS/role, LAN и Windows EXE acceptance:
+**NOT RUN**.
 
 ## Known Issues and Risks
 
@@ -387,10 +406,13 @@ blobs могут сохраняться во внешних clones/caches пос
 их удаление и возможная privacy/credential remediation требуют отдельного
 решения и не входят в clean import.
 
-### KR-2: No current automated tests
+### KR-2: Automated coverage is limited to TASK-GL-001–004
 
-В репозитории нет тестового набора или dev requirements. До `TASK-GL-001`
-нельзя считать миграции, GUI и текущий baseline автоматически защищёнными.
+Добавлены focused tests для backup/migration/idempotence/rollback, ORM schema и
+GitLab HTTP boundary через `MockTransport`, validated project profiles,
+idempotent label bootstrap, managed block/labels, uncertain create recovery и
+resumable uploads. Sync, GUI, реальный GitLab/TLS и Windows EXE ещё не покрыты;
+соответствующие проверки остаются задачами `TASK-GL-005`–`TASK-GL-007`.
 
 ### KR-3: GitLab is not deployed yet
 

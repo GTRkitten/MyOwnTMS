@@ -3,7 +3,17 @@ SQLAlchemy модели базы данных MyOwnTMS
 """
 from datetime import datetime
 from pathlib import Path
-from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, ForeignKey
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship, declarative_base
 from src.config import (
     TEST_CASE_STATUSES, BUG_REPORT_STATUSES, 
@@ -66,11 +76,19 @@ class BugReport(Base):
     priority = Column(Enum(*PRIORITIES, name='bug_priority_enum'), default='Medium')
     severity = Column(Enum(*SEVERITIES, name='severity_enum'), default='Major')
     status = Column(Enum(*BUG_REPORT_STATUSES, name='bug_status_enum'), default='New')
+    source_channel = Column(String(20), nullable=True)
+    external_reference = Column(String(500), nullable=True)
+    gitlab_project_id = Column(Integer, ForeignKey('gitlab_projects.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     # Связи
     attachments = relationship('Attachment', back_populates='bug_report', cascade='all, delete-orphan')
+    gitlab_project = relationship('GitLabProject', back_populates='bug_reports')
+    gitlab_binding = relationship(
+        'GitLabBinding', back_populates='bug_report', uselist=False,
+        cascade='all, delete-orphan'
+    )
     
     def __repr__(self):
         return f"<BugReport(id='{self.id}', title='{self.title}')>"
@@ -88,6 +106,9 @@ class BugReport(Base):
             'priority': self.priority,
             'severity': self.severity,
             'status': self.status,
+            'source_channel': self.source_channel,
+            'external_reference': self.external_reference,
+            'gitlab_project_id': self.gitlab_project_id,
             'created_at': self.created_at.strftime('%d.%m.%Y %H:%M:%S'),
             'updated_at': self.updated_at.strftime('%d.%m.%Y %H:%M:%S')
         }
@@ -112,6 +133,10 @@ class Attachment(Base):
     # Связи
     test_case = relationship('TestCase', back_populates='attachments')
     bug_report = relationship('BugReport', back_populates='attachments')
+    gitlab_bindings = relationship(
+        'GitLabAttachmentBinding', back_populates='attachment',
+        cascade='all, delete-orphan'
+    )
     
     def __repr__(self):
         return f"<Attachment(id={self.id}, file_name='{self.file_name}')>"
@@ -188,3 +213,91 @@ class ArtifactLink(Base):
     
     def __repr__(self):
         return f"<ArtifactLink(source='{self.source_id}', target='{self.target_id}')>"
+
+
+class GitLabProject(Base):
+    """Validated private GitLab project profile (never stores a token)."""
+
+    __tablename__ = 'gitlab_projects'
+
+    id = Column(Integer, primary_key=True)
+    display_name = Column(String(200), nullable=False)
+    gitlab_project_id = Column(Integer, nullable=False, unique=True)
+    path_with_namespace = Column(String(500), nullable=False)
+    web_url = Column(String(1000), nullable=False)
+    visibility = Column(String(20), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    labels_ready_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    bug_reports = relationship('BugReport', back_populates='gitlab_project')
+    bindings = relationship('GitLabBinding', back_populates='project')
+
+
+class GitLabBinding(Base):
+    """Local cache and resumable state for one published bug."""
+
+    __tablename__ = 'gitlab_bindings'
+
+    id = Column(Integer, primary_key=True)
+    bug_report_id = Column(
+        String(20), ForeignKey('bug_reports.id', ondelete='CASCADE'),
+        nullable=False, unique=True
+    )
+    sync_uid = Column(String(36), nullable=False, unique=True)
+    project_id = Column(Integer, ForeignKey('gitlab_projects.id'), nullable=False)
+    issue_id = Column(Integer, nullable=True)
+    issue_iid = Column(Integer, nullable=True)
+    issue_web_url = Column(String(1000), nullable=True)
+    remote_updated_at = Column(DateTime, nullable=True)
+    base_snapshot = Column(Text, nullable=True)
+    sync_state = Column(String(30), nullable=False, default='local_only')
+    last_error_type = Column(String(100), nullable=True)
+    last_error_http_status = Column(Integer, nullable=True)
+    last_error_request_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    bug_report = relationship('BugReport', back_populates='gitlab_binding')
+    project = relationship('GitLabProject', back_populates='bindings')
+    attachment_bindings = relationship(
+        'GitLabAttachmentBinding', back_populates='gitlab_binding',
+        cascade='all, delete-orphan'
+    )
+
+
+class GitLabAttachmentBinding(Base):
+    """Remote upload metadata for one immutable local attachment revision."""
+
+    __tablename__ = 'gitlab_attachment_bindings'
+    __table_args__ = (
+        UniqueConstraint('attachment_id', 'content_sha256'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    gitlab_binding_id = Column(
+        Integer, ForeignKey('gitlab_bindings.id', ondelete='CASCADE'), nullable=False
+    )
+    attachment_id = Column(
+        Integer, ForeignKey('attachments.id', ondelete='CASCADE'), nullable=False
+    )
+    content_sha256 = Column(String(64), nullable=False)
+    remote_upload_id = Column(String(255), nullable=True)
+    remote_url = Column(String(1000), nullable=True)
+    remote_markdown = Column(Text, nullable=True)
+    uploaded_at = Column(DateTime, nullable=True)
+
+    gitlab_binding = relationship(
+        'GitLabBinding', back_populates='attachment_bindings'
+    )
+    attachment = relationship('Attachment', back_populates='gitlab_bindings')
+
+
+class SchemaMigration(Base):
+    """Applied embedded migration identifier."""
+
+    __tablename__ = 'schema_migrations'
+
+    migration_id = Column(String(100), primary_key=True)
+    applied_at = Column(DateTime, nullable=False)

@@ -10,7 +10,7 @@ MyOwnTMS — локальное некоммерческое desktop-прило�
 тестировщика. Оно хранит тест-кейсы и баг-репорты, связи и вложения, позволяет
 искать артефакты и экспортировать их в PDF, DOCX и Markdown.
 
-Текущая версия приложения в коде — `1.0.0`. Планируемая v1.1 добавляет только
+Текущая версия приложения в коде — `1.0.0`. Разрабатываемая v1.1 добавляет только
 явную совместную работу над баг-репортами через GitLab Self-Managed в
 изолированной LAN. Передача артефактов в интернет запрещена. Тест-кейсы остаются
 локальными.
@@ -24,8 +24,8 @@ MyOwnTMS — локальное некоммерческое desktop-прило�
 | Persistence | SQLAlchemy 2 + SQLite |
 | Export | ReportLab, python-docx, Markdown |
 | Package | PyInstaller, Windows EXE |
-| Planned GitLab client | httpx + REST API v4 |
-| Planned tests | pytest, pytest-qt, httpx.MockTransport |
+| GitLab client | httpx + REST API v4 |
+| Tests | pytest, pytest-qt, httpx.MockTransport |
 
 Версии в `requirements.txt` сейчас заданы нижними границами, lock/constraints
 отсутствуют.
@@ -42,8 +42,8 @@ src/
 └── gui/                   # main window, dialogs, styles
 ```
 
-Текущие сервисы сами выполняют `commit()`. База создаётся через
-`Base.metadata.create_all()`; полноценного migration framework пока нет.
+Текущие сервисы сами выполняют `commit()`. Схема создаётся и обновляется через
+небольшой embedded SQLite migration registry; Alembic не используется.
 Runtime-данные лежат рядом с EXE в `data/`, а при запуске из source — в корневом
 `data/`.
 
@@ -60,18 +60,20 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 - PDF/DOCX/Markdown export.
 - Windows PyInstaller spec.
 
-Это source inspection, не runtime acceptance. Автотестов в репозитории нет.
+Это source inspection, не runtime acceptance. Текущий test suite покрывает
+миграции и GitLab HTTP boundary, но не весь legacy GUI/runtime baseline.
 
 ### TASK-DOC-001
 
 - `docs/SRS.md` — создан.
 - `docs/CONTEXT.md` — создан.
 - `docs/SESSION_BRIEF_GITLAB_ISSUES.md` — создан.
-- Реализация GitLab не начата.
+- GitLab API adapter, project-profile/label-bootstrap и resumable publish
+  services реализованы; sync и GUI ещё не начаты.
 
 ### TASK-SEC-001
 
-- Локальная Git hygiene реализована; GitLab-интеграция не начиналась.
+- Локальная Git hygiene реализована до начала сетевой GitLab-интеграции.
 - До очистки path-only inventory через `git ls-files` показал 14 файлов в
   `build/`, 18 в `dist/` (16 пользовательских вложений и одна runtime SQLite
   DB), 23 файла в `__pycache__/` и 4 raw `context/*.json`.
@@ -88,15 +90,73 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   поэтому старая история не попадёт в первый push. Предыдущая публикация может
   оставаться во внешних clones/caches и рассматривается отдельно.
 
+### TASK-GL-001
+
+- Добавлен изолированный pytest-контур с временным data directory; тестовый
+  override недоступен обычному runtime/EXE.
+- `init_database()` использует embedded migration registry вместо
+  `Base.metadata.create_all()`.
+- Перед первой pending migration SQLite backup API создаёт согласованный backup;
+  migrations и их registry-записи применяются в одной транзакции, затем
+  выполняется `PRAGMA integrity_check`.
+- Добавлены planned GitLab tables, поля источника/project у bug report и статус
+  `Черновик`; legacy rows, links и attachments сохраняются.
+- Focused tests: `6 passed`; runtime `data/`, `dist/data/` и пользовательские
+  вложения не использовались.
+
+### TASK-GL-002
+
+- Добавлен `httpx>=0.27,<0.29` и изолированный REST API v4 adapter для current
+  user/project checks, labels, Issue get/create/update и project upload.
+- Origin ограничен HTTPS scheme/host/port без redirects, proxy environment и
+  произвольных response URLs; HTTP доступен только pytest на loopback.
+- TLS verification всегда включена через `SSLContext`; optional internal CA
+  bundle должен быть существующим абсолютным файлом.
+- PAT запрашивается callback только при первом сетевом действии, хранится в
+  `SessionToken` текущего процесса, не попадает в repr/errors и очищается явно.
+- Безопасные typed errors покрывают HTTP failures, timeout, TLS, connection и
+  malformed JSON; `Retry-After` сохраняется как bounded metadata, auto-retry нет.
+- `httpx.MockTransport`: `38 passed`; весь изолированный suite: `44 passed`.
+  Реальный GitLab/TLS/LAN — **NOT RUN**.
+
+### TASK-GL-003
+
+- Добавлен `GitLabProjectService`: remote project проверяется до локальной
+  записи по numeric ID, `path_with_namespace`, same-origin web URL, private
+  visibility и признаку archive.
+- Локально поддерживаются несколько project profiles; PAT остаётся только в
+  `SessionToken` и в SQLite-модель не попадает.
+- Определены 13 Free/CE-compatible managed labels. Preview выполняет только
+  чтение; подтверждение создаёт лишь показанные и всё ещё отсутствующие labels.
+- После записи выполняется контрольное чтение; `labels_ready_at` фиксируется
+  только при полном наборе labels. Pagination учитывается, rename обновляет
+  профиль при preview, повторный bootstrap не создаёт дубли.
+- Focused service/API tests: `14 passed`; весь изолированный suite: `58 passed`.
+  GUI settings smoke и реальный GitLab/role/TLS/LAN — **NOT RUN**.
+
+### TASK-GL-004
+
+- Добавлены pure codec managed block/labels и `GitLabPublishService` с read-only
+  preview, publish validation и сохранением `sync_uid`/`publishing` до POST.
+- Неопределённый create восстанавливается project-scoped поиском точного marker;
+  повторный запуск сначала ищет marker и не создаёт Issue вслепую.
+- PNG/JPEG проверяются по расширению, сигнатуре и лимиту 10 MiB; upload bindings
+  фиксируют attachment ID, SHA-256 и remote metadata после каждого файла.
+- Partial upload сохраняет Issue и завершённые bindings; restart продолжает без
+  повторной загрузки уже зафиксированных файлов.
+- Финальное обновление сохраняет текст вне managed block и unmanaged labels.
+- Focused codec/publish/API tests: `47 passed`; весь изолированный suite:
+  `67 passed`. Реальный GitLab/TLS/LAN и GUI — **NOT RUN**.
+
 ### План v1.1
 
 | Task | Состояние |
 |---|---|
 | TASK-SEC-001 | Ready for clean initial commit — remote NOT CONFIGURED |
-| TASK-GL-001 | Planned |
-| TASK-GL-002 | Planned |
-| TASK-GL-003 | Planned |
-| TASK-GL-004 | Planned |
+| TASK-GL-001 | Implemented locally — focused tests PASS; CI/real legacy DB NOT RUN |
+| TASK-GL-002 | Implemented locally — MockTransport tests PASS; real GitLab NOT RUN |
+| TASK-GL-003 | Implemented locally — service/API tests PASS; GUI/real GitLab NOT RUN |
+| TASK-GL-004 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
 | TASK-GL-005 | Planned |
 | TASK-GL-006 | Planned |
 | TASK-GL-007 | Planned |
@@ -149,6 +209,10 @@ denylist и `.gitignore` добавлены. Remote, commit и push ещё не 
 | Bug dialog | `src/gui/widgets/bug_report_dialog.py` |
 | Main window | `src/gui/main_window.py` |
 | Data paths/enums | `src/config.py` |
+| GitLab API adapter | `src/integrations/gitlab_client.py` |
+| GitLab project profiles/labels | `src/services/gitlab_project_service.py` |
+| GitLab managed block/labels | `src/services/gitlab_issue_codec.py` |
+| GitLab resumable publish | `src/services/gitlab_publish_service.py` |
 | EXE config | `MyOwnTMS.spec` |
 
 ## Команды
@@ -161,14 +225,19 @@ python run.py
 pyinstaller MyOwnTMS.spec
 
 # Текущая статическая проверка Python без запуска GUI
-python -m compileall -q src run.py
+python3 -m compileall -q src tests run.py
+
+# Изолированные тесты TASK-GL-001–004
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest -p no:pytest-qt
 
 # Проверка Markdown whitespace после изменения документации
 git diff --check
 ```
 
-Автоматизированные тестовые команды появятся только в `TASK-GL-001`. До этого
-не утверждать, что pytest или GitLab acceptance прошли.
+Qt plugin пока отключён в focused DB run: GUI-тесты появляются только в
+`TASK-GL-006`. Не утверждать, что GitLab, LAN, Windows EXE или реальная legacy-БД
+прошли acceptance.
 
 ## Как продолжать работу
 

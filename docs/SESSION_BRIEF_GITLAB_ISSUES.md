@@ -96,6 +96,9 @@ git diff --check
 
 **Dependencies:** `TASK-SEC-001`.
 
+**Status:** Implemented locally. Focused temporary-DB tests PASS; GitLab CI,
+real legacy/runtime DB и Windows EXE — NOT RUN.
+
 **Outcome:** Есть изолированный тестовый контур и версионированное обновление
 legacy-БД без пересоздания пользовательских данных.
 
@@ -115,9 +118,28 @@ legacy-БД без пересоздания пользовательских д�
 новой пустой БД, повторном запуске и принудительном исключении. Общий реальный
 `dist/data/tms.db` не использовать.
 
+**Evidence 2026-11-25:**
+
+- `requirements-dev.txt` содержит `pytest` и `pytest-qt`; CI job добавлен, но
+  GitLab runner ещё **NOT RUN**;
+- pytest imports перенаправлены в одноразовый test data directory, runtime
+  `data/` и `dist/data/` не использовались;
+- embedded migration `0001_gitlab_v1_1_schema` создаёт backup через SQLite
+  backup API, применяет schema transactionally и выполняет `integrity_check`;
+- legacy fixture сохранила test case, bug report, attachment и artifact link;
+- новая DB, повторный запуск и forced-exception rollback проверены;
+- `/tmp/myowntms-task-gl001-venv/bin/python -m pytest -q -p no:pytest-qt` —
+  **6 passed**;
+- `python3 -m compileall -q src tests run.py` — **PASS**;
+- обычная активация `pytest-qt` в текущем Linux-контейнере требует отсутствующую
+  системную `libEGL.so.1`; GUI tests относятся к `TASK-GL-006`.
+
 ## TASK-GL-002 — GitLab API client и security boundary
 
 **Dependencies:** `TASK-GL-001`.
+
+**Status:** Implemented locally. MockTransport tests PASS; real GitLab, internal
+CA handshake, LAN и Windows EXE — NOT RUN.
 
 **Outcome:** Изолированный, тестируемый API adapter с обязательным TLS и
 session-only PAT.
@@ -137,9 +159,32 @@ session-only PAT.
 **Validate with:** `httpx.MockTransport`, fake CA/TLS boundary, URL/origin tests
 и redaction assertions. Реальный GitLab на этом этапе `NOT RUN`.
 
+**Evidence 2026-11-25:**
+
+- runtime dependency: `httpx>=0.27,<0.29`; tested with `httpx 0.28.1`;
+- adapter implements current-user/project checks, labels, Issue get/create/
+  update and project Markdown upload endpoints;
+- HTTPS-only canonical origin, no redirects, `trust_env=False`, SSL context and
+  optional absolute CA bundle boundary are covered; pytest-only loopback HTTP is
+  isolated from runtime;
+- first network action can obtain PAT through a UI-owned callback; PAT remains
+  only in the thread-safe in-memory `SessionToken`, is absent from repr/errors
+  and can be cleared;
+- defaults connect/request are 5/30 seconds and confirmed in request extensions;
+- `401`, `403`, `404`, `413`, `422`, `429`, `5xx`, timeout, TLS, connection and
+  malformed JSON map to safe typed errors; response body, token and unsafe
+  request ID are not exposed;
+- `429` exposes bounded `Retry-After`; redirects and write failures receive no
+  automatic retry;
+- focused MockTransport command — **38 passed**; full isolated suite —
+  **44 passed**; real GitLab/TLS/LAN — **NOT RUN**.
+
 ## TASK-GL-003 — project profiles и label bootstrap
 
 **Dependencies:** `TASK-GL-002`.
+
+**Status:** Implemented locally. Service/API tests PASS; GUI settings smoke,
+real GitLab, internal CA, real roles, LAN и Windows EXE — NOT RUN.
 
 **Outcome:** Оператор безопасно добавляет несколько Private projects одного
 GitLab instance и явно готовит каждый к синхронизации.
@@ -156,9 +201,31 @@ GitLab instance и явно готовит каждый к синхрониза�
 **Validate with:** service/API tests для multiple projects, duplicate bootstrap,
 insufficient role и non-private project; GUI smoke настроек.
 
+**Evidence 2026-11-25:**
+
+- `GitLabProjectService` получает project по numeric ID и до локального commit
+  проверяет совпадение ID, bounded `path_with_namespace`, same-origin web URL,
+  `visibility=private` и `archived=false`;
+- несколько profiles сохраняются без PAT; duplicate remote project получает
+  controlled application error;
+- preview возвращает недостающие из 13 managed labels без POST; confirm создаёт
+  только labels из preview, которые всё ещё отсутствуют;
+- после bootstrap выполняется повторный list; `labels_ready_at` ставится только
+  при полном наборе, pagination учитывается, повторный bootstrap не создаёт
+  labels; rename обновляет профиль при новом preview, а stale preview блокируется;
+- malformed/foreign URL, archived/non-private/unavailable project,
+  case-collision и simulated `403` insufficient role покрыты controlled errors;
+- focused command — **14 passed**; полный изолированный suite — **58 passed**;
+  `python3 -m compileall -q src tests run.py` и `git diff --check` — **PASS**;
+- GUI settings smoke относится к `TASK-GL-006`; реальный GitLab/TLS/roles/LAN
+  — **NOT RUN**.
+
 ## TASK-GL-004 — resumable publish и image uploads
 
 **Dependencies:** `TASK-GL-003`.
+
+**Status:** Implemented locally. Focused codec/publish/API tests PASS; real
+GitLab, internal CA, LAN, GUI и Windows EXE — NOT RUN.
 
 **Outcome:** Полный локальный баг публикуется ровно в один Issue, а частичные
 сбои безопасно возобновляются.
@@ -179,6 +246,30 @@ insufficient role и non-private project; GUI smoke настроек.
 **Validate with:** unit/API tests happy path, timeout before/after response,
 existing marker, changed/missing file, duplicate filename/hash, partial upload и
 resume after process restart.
+
+**Evidence 2026-11-25:**
+
+- pure managed block serializer/parser делает canonical version 1 round trip,
+  fail-closed обрабатывает duplicate/malformed/unknown marker и сохраняет текст
+  вне блока; managed label merge сохраняет unmanaged labels;
+- preview не выполняет network write, перечисляет destination, все поля и все
+  файлы, помечая неподдерживаемые вложения как не передаваемые; draft,
+  незаполненные поля и stale preview блокируются;
+- новый UUID4 `sync_uid` и состояние `publishing` коммитятся до create Issue;
+  повторный publish без local Issue metadata сначала выполняет project-scoped
+  поиск exact marker по description;
+- timeout до обработки create оставляет resumable state, а timeout после
+  создания восстанавливает единственный Issue без второго POST;
+- PNG/JPEG проверяются по extension/signature, наличию и лимиту 10 MiB; remote
+  имя не содержит локальный path и включает attachment ID;
+- bindings используют attachment ID + SHA-256; каждый успешный upload сохраняет
+  remote ID/URL/Markdown отдельно, а restart переиспользует завершённые bindings;
+- partial upload возвращает безопасный resumable error и не удаляет Issue;
+  финальный GET/PUT сохраняет внешний текст и unmanaged labels;
+- focused codec/publish/API command — **47 passed**; полный изолированный suite
+  — **67 passed**; `python3 -m compileall -q src tests run.py` и
+  `git diff --check` — **PASS**;
+- real GitLab/TLS/LAN, GUI и Windows EXE — **NOT RUN**.
 
 ## TASK-GL-005 — sync, conflicts и lifecycle
 
@@ -252,7 +343,8 @@ guard и ручной responsiveness smoke. Реальный LAN остаётс�
 
 - В Git index уже находятся runtime DB, attachments, build/dist и raw histories.
 - GitLab ещё не развёрнут: edition/version/roles/limits неизвестны.
-- Текущий код не имеет migration framework и test suite.
+- Test coverage пока ограничен `TASK-GL-001`–004; sync/GUI и реальный GitLab не
+  проверены.
 - REST Issue update не предоставляет атомарный compare-and-swap между GET/PUT.
 - GitLab upload и SQLite не являются общей транзакцией.
 - Remote upload может остаться на GitLab после удаления локальной ссылки.
