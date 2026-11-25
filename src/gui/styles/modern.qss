@@ -1,0 +1,330 @@
+/* MyOwnTMS - Современная тема */
+
+/* Основное окно */
+QMainWindow {
+    background-color: #F5F7FA;
+}
+
+/* Основной виджет */
+QWidget {
+    background-color: #F5F7FA;
+    color: #2C3E50;
+    font-family: "Arial", sans-serif;
+    font-size: 10pt;
+}
+
+/* Кнопки */
+QPushButton {
+    background-color: #3498DB;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-weight: bold;
+    min-width: 80px;
+}
+
+QPushButton:hover {
+    background-color: #2980B9;
+}
+
+QPushButton:pressed {
+    background-color: #21618C;
+}
+
+QPushButton:disabled {
+    background-color: #BDC3C7;
+    color: #7F8C8D;
+}
+
+/* Основная кнопка */
+QPushButton[primary="true"] {
+    background-color: #2C3E50;
+}
+
+QPushButton[primary="true"]:hover {
+    background-color: #1A252F;
+}
+
+/* Кнопка удаления */
+QPushButton[danger="true"] {
+    background-color: #E74C3C;
+}
+
+QPushButton[danger="true"]:hover {
+    background-color: #C0392B;
+}
+
+/* Кнопка успеха */
+QPushButton[success="true"] {
+    background-color: #27AE60;
+}
+
+QPushButton[success="true"]:hover {
+    background-color: #229954;
+}
+
+/* Поля ввода */
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E6ED;
+    border-radius: 4px;
+    padding: 6px;
+    selection-background-color: #3498DB;
+    selection-color: white;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
+    border: 1px solid #3498DB;
+}
+
+QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover, QComboBox:hover {
+    border: 1px solid #BDC3C7;
+}
+
+/* Выпадающий список */
+QComboBox QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E6ED;
+    selection-background-color: #3498DB;
+    selection-color: white;
+}
+
+QComboBox::drop-down {
+    border: none;
+    padding-right: 5px;
+}
+
+QComboBox::down-arrow {
+    image: url(none);
+    width: 10px;
+    height: 10px;
+}
+
+/* Таблицы */
+QTableWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E6ED;
+    border-radius: 4px;
+    gridline-color: #E0E6ED;
+    selection-background-color: #3498DB;
+    selection-color: white;
+}
+
+QTableWidget::item {
+    padding: 5px;
+}
+
+QTableWidget::item:selected {
+    background-color: #3498DB;
+    color: white;
+}
+
+QHeaderView::section {
+    background-color: #F5F7FA;
+    color: #2C3E50;
+    padding: 8px;
+    border: none;
+    border-right: 1px solid #E0E6ED;
+    border-bottom: 1px solid #E0E6ED;
+    font-weight: bold;
+}
+
+QHeaderView::section:first {
+    border-top-left-radius: 4px;
+}
+
+QHeaderView::section:last {
+    border-top-right-radius: 4px;
+    border-right: none;
+}
+
+/* Заголовки групп */
+QGroupBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E6ED;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    font-weight: bold;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    color: #2C3E50;
+}
+
+/* Метки */
+QLabel {
+    color: #2C3E50;
+}
+
+QLabel[heading="true"] {
+    font-size: 14pt;
+    font-weight: bold;
+    color: #2C3E50;
+}
+
+QLabel[subheading="true"] {
+    font-size: 12pt;
+    font-weight: bold;
+    color: #3498DB;
+}
+
+QLabel[dimmed="true"] {
+    color: #7F8C8D;
+}
+
+/* Полосы прокрутки */
+QScrollBar:vertical {
+    background-color: #F5F7FA;
+    width: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #BDC3C7;
+    border-radius: 6px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #95A5A6;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+}
+
+QScrollBar:horizontal {
+    background-color: #F5F7FA;
+    height: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #BDC3C7;
+    border-radius: 6px;
+    min-width: 30px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #95A5A6;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    border: none;
+    background: none;
+}
+
+/* Чекбоксы */
+QCheckBox {
+    spacing: 5px;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #BDC3C7;
+    border-radius: 3px;
+    background-color: #FFFFFF;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #3498DB;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #3498DB;
+    border-color: #3498DB;
+    image: url(none);
+}
+
+/* Список */
+QListWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E6ED;
+    border-radius: 4px;
+    outline: none;
+}
+
+QListWidget::item {
+    padding: 8px;
+    border-bottom: 1px solid #F5F7FA;
+}
+
+QListWidget::item:selected {
+    background-color: #3498DB;
+    color: white;
+}
+
+QListWidget::item:hover {
+    background-color: #F5F7FA;
+}
+
+/* Вкладки */
+QTabWidget::pane {
+    border: 1px solid #E0E6ED;
+    border-radius: 4px;
+    background-color: #FFFFFF;
+}
+
+QTabBar::tab {
+    background-color: #F5F7FA;
+    color: #2C3E50;
+    padding: 8px 16px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #FFFFFF;
+    border-bottom: 2px solid #3498DB;
+    font-weight: bold;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #E0E6ED;
+}
+
+/* Диалоги */
+QDialog {
+    background-color: #F5F7FA;
+}
+
+QMessageBox {
+    background-color: #FFFFFF;
+}
+
+QMessageBox QPushButton {
+    min-width: 100px;
+}
+
+/* Статус бар */
+QStatusBar {
+    background-color: #2C3E50;
+    color: #FFFFFF;
+}
+
+/* Прогресс бар */
+QProgressBar {
+    border: 1px solid #E0E6ED;
+    border-radius: 4px;
+    background-color: #F5F7FA;
+    text-align: center;
+    color: #2C3E50;
+}
+
+QProgressBar::chunk {
+    background-color: #3498DB;
+    border-radius: 3px;
+}
+
+/* Разделитель */
+QFrame[frameShape="4"], QFrame[frameShape="5"] {
+    color: #E0E6ED;
+}

@@ -1,0 +1,7 @@
+stages:
+  - validate
+
+git-hygiene:
+  stage: validate
+  script:
+    - python3 scripts/check_git_hygiene.py

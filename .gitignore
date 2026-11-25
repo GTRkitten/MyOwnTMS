@@ -1,0 +1,24 @@
+# Runtime data and user attachments
+data/
+
+# Build and packaging outputs
+build/
+dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# SQLite runtime databases, sidecars, and backups
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.*
+
+# Raw local conversation/task histories
+context/*.json
