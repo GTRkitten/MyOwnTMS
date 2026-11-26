@@ -86,9 +86,10 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   check подключён в `.gitlab-ci.yml`.
 - `scripts/scan_secrets.py` проверяет non-ignored worktree и все reachable Git
   blobs с path-only redacted output.
-- Clean import подготовлен без старой `.git`: commits и remote отсутствуют,
-  поэтому старая история не попадёт в первый push. Предыдущая публикация может
-  оставаться во внешних clones/caches и рассматривается отдельно.
+- Clean import был подготовлен без старой `.git`. Сейчас локальный репозиторий
+  находится на ветке `dev`, содержит commit `8a88b6b1400f5d1c30558f7ffe060e2ef4144336`
+  и настроенный GitHub `origin`; факт push текущего snapshot локально не
+  проверялся. Предыдущая публикация может оставаться во внешних clones/caches.
 
 ### TASK-GL-001
 
@@ -131,6 +132,9 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 - После записи выполняется контрольное чтение; `labels_ready_at` фиксируется
   только при полном наборе labels. Pagination учитывается, rename обновляет
   профиль при preview, повторный bootstrap не создаёт дубли.
+- Перед каждым publish проект и полный набор managed labels перечитываются. При
+  label drift write блокируется, `labels_ready_at` сбрасывается и требуется новый
+  preview/confirm bootstrap; Issue API не используется для неявного создания.
 - Focused service/API tests: `14 passed`; весь изолированный suite: `58 passed`.
   GUI settings smoke и реальный GitLab/role/TLS/LAN — **NOT RUN**.
 
@@ -148,8 +152,8 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   автоматический повтор POST, чтобы не создавать второй remote upload; такой
   исход требует операторской сверки.
 - Финальное обновление сохраняет текст вне managed block и unmanaged labels.
-- Focused codec/publish/API tests: `47 passed`; весь изолированный suite:
-  `67 passed`. Реальный GitLab/TLS/LAN и GUI — **NOT RUN**.
+- Focused client/codec/publish tests после label-drift regression: `55 passed`.
+  Реальный GitLab/TLS/LAN и GUI — **NOT RUN**.
 
 ### TASK-GL-005
 
@@ -166,9 +170,13 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   same-field conflict требует явного выбора local/remote.
 - Обычное service-level редактирование опубликованного бага переводит binding
   из `synced`/`remote_changed` в `local_changed`.
-- Hard-delete любого GitLab-bound bug заблокирован на service boundary.
-- Focused sync/lifecycle tests: `24 passed`; весь изолированный suite:
-  `91 passed`. Реальный GitLab/TLS/LAN и GUI conflict flow — **NOT RUN**.
+- Удаление опубликованного локального вложения сохраняет exact Markdown как
+  pending removal до подтверждённого Sync. Attachment preview показывает
+  `base/local/remote`; concurrent remote edit требует explicit choice.
+- Hard-delete и возврат в `Черновик` любого GitLab-bound bug заблокированы на
+  service boundary.
+- Focused sync/lifecycle tests: `27 passed`; полный неграфический suite:
+  `102 passed`. Реальный GitLab/TLS/LAN и GUI conflict flow — **NOT RUN**.
 
 ### TASK-GL-006
 
@@ -177,13 +185,14 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 - Bug dialog поддерживает неполный `Черновик`, project/source/reference/sync
   state, локальное сохранение, preview/publish, sync и безопасное открытие Issue.
 - Main table показывает project/sync state; conflict dialog отображает
-  base/local/remote и требует выбор для каждого конфликтующего поля.
+  base/local/remote, включая удаление вложения, и требует выбор для каждого
+  конфликтующего поля. После первой публикации `Черновик` сразу недоступен.
 - GitLab-операции выполняются через `QThreadPool` с отдельными DB sessions;
   progress/buttons исключают повторный запуск, а Qt auto-disconnect не доставляет
   результат уничтоженному widget.
-- Focused headless `pytest-qt`: `8 passed`; весь изолированный suite:
-  `99 passed`. Manual responsiveness, real GitLab/TLS/LAN и Windows EXE —
-  **NOT RUN**.
+- В GUI suite определено 10 focused tests, включая post-publish Draft guard, но
+  текущий запуск — **NOT RUN**: импорт Qt требует отсутствующую `libEGL.so.1`.
+  Manual responsiveness, real GitLab/TLS/LAN и Windows EXE — **NOT RUN**.
 
 ### TASK-GL-007
 
@@ -191,11 +200,13 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   runtime data, SQLite DB, CA bundle, GitLab config и PAT в EXE не добавляются.
 - PyInstaller `6.22.3` на Linux собрал one-file bundle; Analysis включил
   `httpx`, `httpcore`, `_ssl`, TLS libraries и `certifi/cacert.pem`.
-- Неграфический изолированный suite: `91 passed`; hygiene и redacted secret scan
+- Неграфический изолированный suite: `102 passed`; hygiene и redacted secret scan
   — **PASS**.
 - Frozen Linux startup и GUI suite остановились на отсутствующей системной
   `libEGL.so.1`; это не Windows acceptance.
 - Отдельный отчёт и runbook: `docs/GITLAB_V1_1_ACCEPTANCE.md`.
+- Исторический Linux bundle не пересобирался после последних незакоммиченных
+  source-изменений labels/attachments/Draft guard.
 - Clean Windows, real GitLab/internal CA/LAN, migration/rollback, outage/PAT
   restart и egress capture — **NOT RUN**; задача остаётся открытой.
 
@@ -203,13 +214,13 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 
 | Task | Состояние |
 |---|---|
-| TASK-SEC-001 | Ready for clean initial commit — remote NOT CONFIGURED |
+| TASK-SEC-001 | Local hygiene PASS — commit и GitHub remote существуют; push status NOT VERIFIED |
 | TASK-GL-001 | Implemented locally — focused tests PASS; CI/real legacy DB NOT RUN |
 | TASK-GL-002 | Implemented locally — MockTransport tests PASS; real GitLab NOT RUN |
 | TASK-GL-003 | Implemented locally — service/API tests PASS; GUI/real GitLab NOT RUN |
 | TASK-GL-004 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
 | TASK-GL-005 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
-| TASK-GL-006 | Implemented locally — focused pytest-qt PASS; real GitLab/LAN NOT RUN |
+| TASK-GL-006 | Implemented locally — current GUI suite blocked by `libEGL.so.1`; real GitLab/LAN NOT RUN |
 | TASK-GL-007 | Local packaging preflight PASS; Windows/LAN acceptance NOT RUN |
 
 ## Ключевые решения v1.1
@@ -238,9 +249,10 @@ redirects и не позволяет отключать TLS verification.
 До `TASK-SEC-001` исходный Git index содержал `dist/data/tms.db`, пользовательские
 изображения, build/dist outputs и raw `context/*.json`. Clean import создан из
 очищенного snapshot без исходной `.git`, runtime/user files и старых commits;
-denylist и `.gitignore` добавлены. Remote, commit и push ещё не выполнялись.
-Предыдущая публикация может сохраняться во внешних clones/caches; её удаление не
-входит в clean import.
+denylist и `.gitignore` добавлены. Сейчас commit и GitHub remote уже существуют;
+содержимое remote и факт push текущего snapshot не проверялись. Предыдущая
+публикация может сохраняться во внешних clones/caches; её удаление не входит в
+clean import.
 
 Никогда не выводить значения PAT, credentials или содержимое артефактов в логи и
 отчёты проверок.
@@ -297,8 +309,8 @@ legacy-БД прошли acceptance.
 1. Прочитать этот файл, `docs/SRS.md` и brief целиком.
 2. Проверить `git status --short`; не затрагивать пользовательские изменения.
 3. Выполнять ровно одну numbered task из brief.
-4. Начать с `TASK-SEC-001`; не подключать remote и не отправлять репозиторий до
-   закрытия P0 data hygiene.
+4. `TASK-SEC-001` hygiene уже выполнен локально; не выполнять commit/push/pull и
+   не менять существующий remote без отдельного запроса владельца.
 5. Для GitLab проверок разделять mock/local, disposable GitLab, LAN/EXE и
    production-like evidence. Незапущенное отмечать `NOT RUN`.
 6. После каждой закрытой задачи синхронизировать статусы в SRS, CONTEXT и brief.

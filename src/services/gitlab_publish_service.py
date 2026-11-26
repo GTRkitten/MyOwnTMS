@@ -40,6 +40,7 @@ from src.services.gitlab_issue_codec import (
     serialize_managed_block,
 )
 from src.services.gitlab_project_service import (
+    GitLabManagedLabelsMissingError,
     GitLabProjectService,
     GitLabProjectServiceError,
 )
@@ -360,7 +361,7 @@ class GitLabPublishService:
             )
         bug = session.get(BugReport, bug_report_id)
         project = self._validated_project(bug)
-        self._revalidate_project(project)
+        self._revalidate_project(session, project)
         binding, created_locally = self._get_or_create_binding(session, bug, project)
 
         uploaded_ids: list[int] = []
@@ -522,11 +523,19 @@ class GitLabPublishService:
             )
         return project
 
-    def _revalidate_project(self, project: GitLabProject) -> None:
-        """Recheck remote identity and safety properties before any publish mutation."""
+    def _revalidate_project(
+        self, session: Session, project: GitLabProject
+    ) -> None:
+        """Recheck project identity and labels before any publish mutation."""
 
         try:
-            GitLabProjectService(self._client).revalidate_project(project)
+            GitLabProjectService(self._client).verify_managed_labels(project)
+        except GitLabManagedLabelsMissingError as error:
+            project.labels_ready_at = None
+            session.commit()
+            raise PublishValidationError(
+                "The GitLab project labels must be previewed and prepared again"
+            ) from error
         except GitLabProjectServiceError as error:
             raise PublishValidationError(
                 "The GitLab project could not be safely revalidated"

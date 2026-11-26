@@ -12,9 +12,11 @@ packaging preflight и фактического acceptance на Windows/GitLab-�
 
 Дата локальной проверки: 2026-11-26.
 
-Исходный snapshot: `b87efcad7589f21a31a9f30295958892ac805010` плюс
-незакоммиченные изменения `TASK-GL-005`–`TASK-GL-007`; SHA сам по себе не
-идентифицирует весь проверенный snapshot.
+Исторический packaging snapshot: `b87efcad7589f21a31a9f30295958892ac805010`
+плюс незакоммиченные изменения `TASK-GL-005`–`TASK-GL-007`; SHA сам по себе не
+идентифицирует весь собранный snapshot. Текущий source audit выполнен на
+`8a88b6b1400f5d1c30558f7ffe060e2ef4144336` плюс незакоммиченные исправления;
+после них bundle не пересобирался.
 
 Локальная среда:
 
@@ -28,11 +30,12 @@ packaging preflight и фактического acceptance на Windows/GitLab-�
 
 | Проверка | Результат | Evidence / ограничение |
 |---|---|---|
-| PyInstaller Analysis и one-file build на Linux | PASS | Bundle создан в `/tmp`; SHA-256 `844a65d0727764d90e94ca2cf5cb90a4110a0701d4287ee9eea599b38c79be39` |
+| Исторический PyInstaller Analysis и one-file build на Linux | PASS | Bundle создан в `/tmp`; SHA-256 `844a65d0727764d90e94ca2cf5cb90a4110a0701d4287ee9eea599b38c79be39`; последние source-изменения не включает |
+| Пересборка bundle после последних исправлений | NOT RUN | Требуется новый packaging preflight из текущего source snapshot |
 | httpx/TLS содержимое bundle | PASS | Analysis содержит `httpx`, `httpcore`, `_ssl`, TLS library и `certifi/cacert.pem` |
 | Отсутствие runtime/config data в spec | PASS | `datas` — явный allowlist styles и публичной документации; DB, attachments, CA, settings и PAT не включены |
 | Linux frozen startup smoke | BLOCKED | Bundle собран, но хост не содержит системную `libEGL.so.1`; приложение не стартовало |
-| Неграфический изолированный suite | PASS | `91 passed`; GUI tests не запускались из-за той же отсутствующей `libEGL.so.1` |
+| Неграфический изолированный suite | PASS | Текущий source snapshot: `102 passed`; GUI suite не запускался из-за отсутствующей `libEGL.so.1` |
 | Git hygiene | PASS | Запрещённые runtime/generated paths не отслеживаются |
 | Redacted secret scan | PASS | Worktree/history findings: `0` / `0` |
 | Windows EXE build | NOT RUN | Нужна Windows build-машина |

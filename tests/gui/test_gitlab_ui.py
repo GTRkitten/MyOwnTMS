@@ -165,6 +165,34 @@ def test_publish_requires_preview_and_disables_duplicate_start(
     assert not dialog._network_busy
 
 
+def test_first_publish_disables_draft_without_reopening_dialog(qtbot, session):
+    project = _project(session)
+    bug = _bug(session, project)
+    dialog = BugReportDialog(
+        session, bug.id, gitlab_controller=_ImmediateController(session)
+    )
+    qtbot.addWidget(dialog)
+    draft_index = dialog.status_combo.findText("Черновик")
+    assert dialog.status_combo.model().item(draft_index).isEnabled()
+
+    session.add(
+        GitLabBinding(
+            bug_report=bug,
+            project=project,
+            sync_uid="00000000-0000-4000-8000-000000000042",
+            issue_id=501,
+            issue_iid=42,
+            issue_web_url="https://gitlab.internal/customer/app/-/issues/42",
+            sync_state="synced",
+        )
+    )
+    session.commit()
+
+    dialog._publish_finished(SimpleNamespace(issue_iid=42))
+
+    assert not dialog.status_combo.model().item(draft_index).isEnabled()
+
+
 def test_sync_conflict_requires_per_field_resolution(qtbot, session, monkeypatch):
     project = _project(session)
     bug = _bug(session, project)

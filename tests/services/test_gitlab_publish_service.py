@@ -27,6 +27,7 @@ from src.services.gitlab_publish_service import (
     PublishPreviewStaleError,
     PublishValidationError,
 )
+from src.services.gitlab_project_service import MANAGED_LABELS
 
 
 @pytest.fixture
@@ -40,13 +41,31 @@ def database():
         engine.dispose()
 
 
-def _client(handler, *, origin="https://gitlab.internal"):
+def _client(
+    handler,
+    *,
+    origin="https://gitlab.internal",
+    managed_label_names=None,
+):
     token = SessionToken()
     token.set("session-only-test-token")
+    label_names = (
+        tuple(label.name for label in MANAGED_LABELS)
+        if managed_label_names is None
+        else tuple(managed_label_names)
+    )
+
+    def wrapped_handler(request):
+        if request.method == "GET" and request.url.path.endswith("/labels"):
+            return httpx.Response(
+                200, json=[{"name": name} for name in label_names]
+            )
+        return handler(request)
+
     return GitLabApiClient(
         GitLabClientConfig(origin),
         token,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(wrapped_handler),
     )
 
 
@@ -232,6 +251,33 @@ def test_publish_revalidation_network_failure_leaves_no_binding(database, tmp_pa
 
     assert requests == [("GET", "/api/v4/projects/11")]
     assert session.query(GitLabBinding).count() == 0
+    session.close()
+
+
+def test_publish_fails_closed_when_prepared_labels_were_removed(
+    database, tmp_path
+):
+    session = database()
+    bug, project = _seed(session, tmp_path)
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    remaining = tuple(label.name for label in MANAGED_LABELS[:-1])
+    with _client(handler, managed_label_names=remaining) as client:
+        service = GitLabPublishService(client)
+        preview = service.preview(session, bug.id)
+        with pytest.raises(PublishValidationError, match="prepared again"):
+            service.publish(session, bug.id, preview)
+
+    session.refresh(project)
+    assert project.labels_ready_at is None
+    assert session.query(GitLabBinding).count() == 0
+    assert requests == [("GET", "/api/v4/projects/11")]
     session.close()
 
 

@@ -39,9 +39,10 @@ PAT на диск.
 
 **Dependencies:** `TASK-DOC-001` завершён.
 
-**Status:** Ready for clean initial commit. Snapshot перенесён без старой `.git`
-и runtime/user files; текущий index и будущий CI защищены denylist. Commit,
-remote и push ещё не выполнялись. Остаточный риск внешних clones/caches от
+**Status:** Local hygiene PASS. Snapshot перенесён без старой `.git` и
+runtime/user files; текущий index и будущий CI защищены denylist. Локальный
+репозиторий уже содержит commit и GitHub `origin`; факт push текущего snapshot
+не проверен. Остаточный риск внешних clones/caches от
 предыдущей публикации рассматривается отдельно.
 
 **Outcome:** Репозиторий можно подключать к приватному GitLab без автоматической
@@ -57,7 +58,8 @@ remote и push ещё не выполнялись. Остаточный риск
 4. Добавлена локальная/CI denylist-проверка `git ls-files`.
 5. Выполнен секрет-скан текущего tree/history с redacted output: отчёт содержит
    только тип и путь, но не значение секрета.
-6. Переписывание истории, удаление remote data, commit и push не выполнялись.
+6. Переписывание истории и удаление remote data не выполнялись; commit и remote
+   существуют, а push status остаётся непроверенным.
 
 **Validate with:**
 
@@ -82,14 +84,16 @@ git diff --check
 - `python3 scripts/scan_secrets.py` — PASS, worktree findings: 0, reachable
   history findings: 0; scanner выводит только тип и путь;
 - `.gitlab-ci.yml` job — NOT RUN (GitLab/runner ещё не развёрнут);
-- history rewrite, remote deletion, commit, push и pull — NOT RUN.
+- history rewrite, remote deletion, push и pull — NOT RUN.
 
 **Clean import evidence 2026-11-25:**
 
 - clean snapshot создан из `ec7f7fa` без исходной `.git` и старых commits;
 - `context/`, `data/`, `dist/`, `build/`, attachments, SQLite и bytecode в
   snapshot отсутствуют;
-- новый репозиторий имеет unborn `main`, без remote и без commits;
+- исторически clean import был создан без старой `.git`; текущий репозиторий —
+  ветка `dev`, commit `8a88b6b1400f5d1c30558f7ffe060e2ef4144336`, GitHub `origin`;
+  содержимое remote и push status локально не проверены;
 - initial commit и push оставлены владельцу репозитория.
 
 ## TASK-GL-001 — tests и безопасные SQLite migrations
@@ -220,6 +224,11 @@ insufficient role и non-private project; GUI smoke настроек.
 - GUI settings smoke относится к `TASK-GL-006`; реальный GitLab/TLS/roles/LAN
   — **NOT RUN**.
 
+**Correction evidence 2026-11-26:** перед каждым publish профиль проекта и все
+13 managed labels перечитываются. Label drift блокирует Issue write, сбрасывает
+`labels_ready_at` и требует нового preview/confirm bootstrap. Focused tests —
+**14 passed**; реальный GitLab — **NOT RUN**.
+
 ## TASK-GL-004 — resumable publish и image uploads
 
 **Dependencies:** `TASK-GL-003`.
@@ -278,8 +287,9 @@ filename/hash, partial upload и resume after process restart.
 
 **Correction evidence 2026-11-26:** lost-response regression сохраняет
 незавершённый intent между DB sessions и подтверждает один upload POST после
-явного повтора; publish/client tests — **51 passed**, весь неграфический
-DB/integration/service suite — **97 passed**. Реальный GitLab — **NOT RUN**.
+явного повтора; дополнительная label-drift проверка выполняется до write.
+Publish/client tests — **55 passed**, весь неграфический suite — **102 passed**.
+Реальный GitLab — **NOT RUN**.
 
 ## TASK-GL-005 — sync, conflicts и lifecycle
 
@@ -325,16 +335,24 @@ content, inconsistent labels/state, remote deletion и concurrent changes.
 - после PUT выполняется контрольный GET; изменение между PUT и control read
   переводит binding в `conflict`. Неатомарная GET→PUT race остаётся
   документированным ограничением GitLab Issues API;
-- focused command — **24 passed**; полный изолированный suite — **91 passed**;
+- исторический focused command — **24 passed**; полный изолированный suite на
+  том snapshot — **91 passed**;
   `python3 -m compileall -q src tests run.py` и `git diff --check` — **PASS**;
 - real GitLab/TLS/LAN, GUI conflict flow и Windows EXE — **NOT RUN**.
+
+**Correction evidence 2026-11-26:** удаление опубликованного локального
+вложения сохраняет exact Markdown как pending removal в base snapshot. Sync
+показывает `base/local/remote`, удаляет ссылку только после подтверждения, а
+concurrent remote edit требует explicit choice. GitLab-bound bug нельзя вернуть
+в `Черновик` на service boundary. Focused sync/lifecycle tests — **27 passed**;
+полный неграфический suite — **102 passed**.
 
 ## TASK-GL-006 — PySide6 UX
 
 **Dependencies:** `TASK-GL-003`, `TASK-GL-004`, `TASK-GL-005`.
 
-**Status:** Implemented locally. Focused headless pytest-qt and full isolated
-suite PASS; manual responsiveness, real GitLab/TLS/LAN and Windows EXE — NOT RUN.
+**Status:** Implemented locally. Текущий GUI suite NOT RUN из-за отсутствующей
+`libEGL.so.1`; manual responsiveness, real GitLab/TLS/LAN и Windows EXE — NOT RUN.
 
 **Outcome:** Вся интеграция доступна через понятный GUI без блокировки event loop.
 
@@ -365,11 +383,17 @@ guard и ручной responsiveness smoke. Реальный LAN остаётс�
   local/remote выбор по каждому конфликтующему полю;
 - network operations используют `QThreadPool`, отдельную SQLAlchemy session,
   busy/progress state и Qt auto-disconnect для уничтоженных widgets;
-- focused headless pytest-qt command — **8 passed**; полный изолированный suite
-  — **99 passed**; `python3 -m compileall -q src tests run.py` и
+- исторический focused headless pytest-qt command — **8 passed**; полный
+  изолированный suite на том snapshot — **99 passed**;
+  `python3 -m compileall -q src tests run.py` и
   `git diff --check` — **PASS**;
 - manual responsiveness, real GitLab/TLS/LAN, GitLab CI и Windows EXE —
   **NOT RUN**.
+
+**Correction evidence 2026-11-26:** после первой публикации `Черновик` сразу
+недоступен; conflict dialog отображает pending removal вложения. Определено 10
+focused GUI tests, но текущий запуск — **NOT RUN**: импорт Qt требует
+отсутствующую `libEGL.so.1`.
 
 ## TASK-GL-007 — package и LAN acceptance
 
@@ -404,19 +428,21 @@ CA/LAN, migration/rollback drill and egress capture — NOT RUN. Task remains op
 - PyInstaller `6.22.3` + hooks-contrib `2026.10` на Linux успешно собрал
   one-file bundle; Analysis содержит `httpx`, `httpcore`, `_ssl`, TLS libraries
   и `certifi/cacert.pem`;
-- неграфический изолированный suite — **91 passed**; Git hygiene и redacted
+- текущий неграфический изолированный suite — **102 passed**; Git hygiene и redacted
   worktree/history secret scan — **PASS**;
 - frozen Linux startup и полный GUI suite — **NOT RUN/PRECONDITION FAILED**:
   host не содержит системную `libEGL.so.1`; Linux bundle не является Windows EXE;
 - создан отдельный точный report/runbook:
   `docs/GITLAB_V1_1_ACCEPTANCE.md`;
+- исторический Linux bundle не пересобирался после последних source-изменений;
 - clean Windows build/start, representative legacy DB migration/rollback,
   real Private GitLab/internal CA create/upload/sync/conflict/close, outage,
   restart PAT и network/firewall capture — **NOT RUN**.
 
 ## Известные риски для проверки
 
-- В Git index уже находятся runtime DB, attachments, build/dist и raw histories.
+- Текущие hygiene и redacted secret checks проходят; опубликованные ранее
+  clones/caches остаются отдельным непроверенным риском.
 - GitLab ещё не развёрнут: edition/version/roles/limits неизвестны.
 - Test coverage ограничен локальными `TASK-GL-001`–006; manual responsiveness и
   реальный GitLab не проверены.
@@ -444,7 +470,7 @@ CA/LAN, migration/rollback drill and egress capture — NOT RUN. Task remains op
 ```text
 1. Прочитать docs/CONTEXT.md, docs/SRS.md и этот brief целиком.
 2. Проверить git status --short и не затрагивать пользовательские изменения.
-3. Выбрать одну задачу: сначала TASK-SEC-001, затем TASK-GL-001...007.
+3. Выбрать одну ещё открытую задачу и соблюдать её dependencies/границы.
 4. Выполнить только выбранную задачу и её focused validation.
 5. Не использовать реальные data/dist DB или attachments в тестах.
 6. Не выполнять commit, push, pull, history rewrite, deploy или внешний network

@@ -6,14 +6,26 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.database.models import Base, BugReport, GitLabBinding, GitLabProject
+from src.database.models import (
+    Attachment,
+    Base,
+    BugReport,
+    GitLabAttachmentBinding,
+    GitLabBinding,
+    GitLabProject,
+)
 from src.integrations.gitlab_client import (
     GitLabApiClient,
     GitLabClientConfig,
     GitLabServerError,
     SessionToken,
 )
-from src.services.artifact_service import BugReportService, PublishedBugDeleteError
+from src.services.artifact_service import (
+    BugReportService,
+    PublishedBugDeleteError,
+    PublishedBugDraftError,
+)
+from src.services.attachment_service import AttachmentService
 from src.services.gitlab_issue_codec import (
     ManagedIssueContent,
     managed_labels_for,
@@ -131,6 +143,39 @@ def _seed(session, *, base=None, local=None):
     return bug, binding
 
 
+def _attach_published_image(session, bug, binding, tmp_path):
+    markdown = "![screen](/uploads/1/screen.png)"
+    binding.base_snapshot = json.dumps(
+        {**_snapshot().as_dict(), "attachments": [markdown]},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    attachment = Attachment(
+        artifact_id=bug.id,
+        artifact_type="bug_report",
+        file_path=str(image_path),
+        file_name="screen.png",
+        file_type="image/png",
+        bug_report=bug,
+    )
+    session.add(
+        GitLabAttachmentBinding(
+            gitlab_binding=binding,
+            attachment=attachment,
+            content_sha256="a" * 64,
+            remote_upload_id="1",
+            remote_url="/uploads/1/screen.png",
+            remote_markdown=markdown,
+            uploaded_at=datetime.now(),
+        )
+    )
+    session.commit()
+    return attachment, markdown
+
+
 def _client(handler):
     token = SessionToken()
     token.set("session-only-test-token")
@@ -224,6 +269,71 @@ def test_unchanged_issue_remains_synced_without_put(database):
     assert result.pulled is False
     assert calls == ["GET", "GET"]
     assert binding.sync_state == "synced"
+    session.close()
+
+
+def test_deleted_local_attachment_is_removed_from_managed_block_on_sync(
+    database, tmp_path
+):
+    session = database()
+    bug, binding = _seed(session)
+    attachment, markdown = _attach_published_image(
+        session, bug, binding, tmp_path
+    )
+
+    assert AttachmentService.delete_attachment(session, attachment.id)
+    session.refresh(binding)
+    pending_snapshot = json.loads(binding.base_snapshot)
+    assert pending_snapshot["pending_attachment_removals"] == [markdown]
+    assert binding.sync_state == "local_changed"
+
+    issue = _remote_payload(_snapshot())
+    handler, calls = _stateful_handler(issue)
+    with _client(handler) as client:
+        service = GitLabSyncService(client)
+        preview = service.preview(session, bug.id)
+        result = service.confirm(session, preview)
+
+    assert preview.action == "push"
+    assert "attachments" in preview.local_changes
+    assert result.pushed is True
+    assert "![screen]" not in issue["description"]
+    stored_snapshot = json.loads(binding.base_snapshot)
+    assert stored_snapshot["attachments"] == []
+    assert "pending_attachment_removals" not in stored_snapshot
+    assert calls == ["GET", "GET", "PUT", "GET"]
+    session.close()
+
+
+def test_attachment_removal_conflict_requires_explicit_choice(
+    database, tmp_path
+):
+    session = database()
+    bug, binding = _seed(session)
+    attachment, _markdown = _attach_published_image(
+        session, bug, binding, tmp_path
+    )
+    assert AttachmentService.delete_attachment(session, attachment.id)
+
+    issue = _remote_payload(_snapshot())
+    remote_markdown = "![remote](/uploads/2/remote.png)"
+    issue["description"] = issue["description"].replace(
+        "![screen](/uploads/1/screen.png)", remote_markdown
+    )
+    handler, calls = _stateful_handler(issue)
+    with _client(handler) as client:
+        service = GitLabSyncService(client)
+        preview = service.preview(session, bug.id)
+        with pytest.raises(SyncConflictResolutionError):
+            service.confirm(session, preview)
+        result = service.confirm(session, preview, {"attachments": "remote"})
+
+    assert preview.action == "conflict"
+    assert tuple(item.field for item in preview.conflicts) == ("attachments",)
+    assert result.pushed is False
+    assert result.pulled is True
+    assert json.loads(binding.base_snapshot)["attachments"] == [remote_markdown]
+    assert calls == ["GET", "GET", "GET"]
     session.close()
 
 
@@ -471,6 +581,18 @@ def test_gitlab_bound_bug_cannot_be_hard_deleted(database):
         BugReportService.delete(session, bug.id)
 
     assert session.get(BugReport, bug.id) is not None
+    session.close()
+
+
+def test_gitlab_bound_bug_cannot_return_to_draft(database):
+    session = database()
+    bug, binding = _seed(session)
+
+    with pytest.raises(PublishedBugDraftError):
+        BugReportService.update(session, bug.id, {"status": "Черновик"})
+
+    assert bug.status == "Новый"
+    assert binding.sync_state == "synced"
     session.close()
 
 

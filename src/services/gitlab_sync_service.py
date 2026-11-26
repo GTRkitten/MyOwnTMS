@@ -43,6 +43,7 @@ SYNC_FIELD_NAMES = (
     "severity",
 )
 _BASE_KEYS = frozenset((*SYNC_FIELD_NAMES, "attachments"))
+_BASE_OPTIONAL_KEYS = frozenset({"pending_attachment_removals"})
 _LABEL_GROUPS = {
     "status": STATUS_LABELS,
     "priority": PRIORITY_LABELS,
@@ -147,6 +148,11 @@ class SyncPreview:
     action: str
     sync_state: str
     remote_updated_at: datetime
+    base_attachment_markdown: tuple[str, ...]
+    local_attachment_markdown: tuple[str, ...]
+    remote_attachment_markdown: tuple[str, ...]
+    merged_attachment_markdown: tuple[str, ...]
+    pending_attachment_removals: tuple[str, ...]
     _remote_issue: _RemoteIssue
 
 
@@ -157,6 +163,13 @@ class SyncResult:
     pulled: bool
     sync_state: str
     remote_updated_at: datetime
+
+
+@dataclass(frozen=True)
+class _BaseState:
+    snapshot: IssueSnapshot
+    attachment_markdown: tuple[str, ...]
+    pending_attachment_removals: tuple[str, ...]
 
 
 def _normalize_text(value: Any, field_name: str, maximum: int = 1_000_000) -> str:
@@ -244,24 +257,74 @@ def _snapshot_json(snapshot: IssueSnapshot, attachments: tuple[str, ...]) -> str
     return json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _base_snapshot(value: str | None) -> IssueSnapshot:
+def _base_state(value: str | None) -> _BaseState:
     if not value:
         raise SyncBaseSnapshotError("The last successful sync snapshot is missing")
     try:
         decoded = json.loads(value)
     except (TypeError, ValueError):
         raise SyncBaseSnapshotError("The last successful sync snapshot is invalid") from None
-    if not isinstance(decoded, dict) or set(decoded) != _BASE_KEYS:
+    if (
+        not isinstance(decoded, dict)
+        or not _BASE_KEYS.issubset(decoded)
+        or set(decoded) - _BASE_KEYS - _BASE_OPTIONAL_KEYS
+    ):
         raise SyncBaseSnapshotError("The last successful sync snapshot is invalid")
     attachments = decoded.get("attachments")
     if not isinstance(attachments, list) or not all(
         isinstance(item, str) for item in attachments
     ):
         raise SyncBaseSnapshotError("The last successful sync snapshot is invalid")
+    pending = decoded.get("pending_attachment_removals", [])
+    if (
+        not isinstance(pending, list)
+        or not all(isinstance(item, str) for item in pending)
+        or len(pending) != len(set(pending))
+        or any(item not in attachments for item in pending)
+    ):
+        raise SyncBaseSnapshotError("The last successful sync snapshot is invalid")
     try:
-        return normalize_snapshot(decoded)
+        snapshot = normalize_snapshot(decoded)
     except SyncValidationError as error:
         raise SyncBaseSnapshotError("The last successful sync snapshot is invalid") from error
+    return _BaseState(snapshot, tuple(attachments), tuple(pending))
+
+
+def _base_snapshot(value: str | None) -> IssueSnapshot:
+    return _base_state(value).snapshot
+
+
+def _local_attachment_markdown(base: _BaseState) -> tuple[str, ...]:
+    pending = set(base.pending_attachment_removals)
+    return tuple(
+        markdown for markdown in base.attachment_markdown if markdown not in pending
+    )
+
+
+def _merge_attachment_markdown(
+    base: tuple[str, ...],
+    local: tuple[str, ...],
+    remote: tuple[str, ...],
+) -> tuple[tuple[str, ...], bool, bool, FieldConflict | None]:
+    local_changed = local != base
+    remote_changed = remote != base
+    if local == remote:
+        return local, local_changed, remote_changed, None
+    if not local_changed:
+        return remote, local_changed, remote_changed, None
+    if not remote_changed:
+        return local, local_changed, remote_changed, None
+    return (
+        base,
+        local_changed,
+        remote_changed,
+        FieldConflict(
+            "attachments",
+            "\n".join(base),
+            "\n".join(local),
+            "\n".join(remote),
+        ),
+    )
 
 
 def _local_snapshot(bug: BugReport) -> IssueSnapshot:
@@ -339,6 +402,21 @@ def _resolve_conflicts(
     return IssueSnapshot(**values)
 
 
+def _validated_resolutions(
+    conflicts: tuple[FieldConflict, ...],
+    resolutions: Mapping[str, str] | None,
+) -> dict[str, str]:
+    choices = dict(resolutions or {})
+    conflict_names = {conflict.field for conflict in conflicts}
+    if set(choices) != conflict_names or any(
+        choice not in {"local", "remote"} for choice in choices.values()
+    ):
+        raise SyncConflictResolutionError(
+            "Every conflict requires one local or remote choice"
+        )
+    return choices
+
+
 class GitLabSyncService:
     """Builds confirmed sync previews and applies them without silent overwrites."""
 
@@ -347,7 +425,8 @@ class GitLabSyncService:
 
     def preview(self, session: Session, bug_report_id: str) -> SyncPreview:
         bug, binding, project = self._binding(session, bug_report_id)
-        base = _base_snapshot(binding.base_snapshot)
+        base_state = _base_state(binding.base_snapshot)
+        base = base_state.snapshot
         local = _local_snapshot(bug)
         try:
             remote = self._fetch_remote(binding, project)
@@ -368,16 +447,44 @@ class GitLabSyncService:
             raise
 
         merge = three_way_merge(base, local, remote.snapshot)
-        if merge.conflicts:
+        local_attachments = _local_attachment_markdown(base_state)
+        if base_state.pending_attachment_removals:
+            (
+                merged_attachments,
+                local_attachments_changed,
+                remote_attachments_changed,
+                attachment_conflict,
+            ) = _merge_attachment_markdown(
+                base_state.attachment_markdown,
+                local_attachments,
+                remote.attachment_markdown,
+            )
+        else:
+            # Remote-only Markdown remains GitLab-authoritative and is cached
+            # without pretending that an unavailable local file was pulled.
+            merged_attachments = remote.attachment_markdown
+            local_attachments_changed = False
+            remote_attachments_changed = False
+            attachment_conflict = None
+        local_changes = merge.local_changes + (
+            ("attachments",) if local_attachments_changed else ()
+        )
+        remote_changes = merge.remote_changes + (
+            ("attachments",) if remote_attachments_changed else ()
+        )
+        conflicts = merge.conflicts + (
+            (attachment_conflict,) if attachment_conflict else ()
+        )
+        if conflicts:
             action = "conflict"
             sync_state = "conflict"
-        elif merge.local_changes and merge.remote_changes:
+        elif local_changes and remote_changes:
             action = "merge"
             sync_state = "local_changed"
-        elif merge.local_changes:
+        elif local_changes:
             action = "push"
             sync_state = "local_changed"
-        elif merge.remote_changes:
+        elif remote_changes:
             action = "pull"
             sync_state = "remote_changed"
         else:
@@ -397,12 +504,17 @@ class GitLabSyncService:
             local=local,
             remote=remote.snapshot,
             merged=merge.merged,
-            local_changes=merge.local_changes,
-            remote_changes=merge.remote_changes,
-            conflicts=merge.conflicts,
+            local_changes=local_changes,
+            remote_changes=remote_changes,
+            conflicts=conflicts,
             action=action,
             sync_state=sync_state,
             remote_updated_at=remote.updated_at,
+            base_attachment_markdown=base_state.attachment_markdown,
+            local_attachment_markdown=local_attachments,
+            remote_attachment_markdown=remote.attachment_markdown,
+            merged_attachment_markdown=merged_attachments,
+            pending_attachment_removals=base_state.pending_attachment_removals,
             _remote_issue=remote,
         )
 
@@ -413,11 +525,18 @@ class GitLabSyncService:
         resolutions: Mapping[str, str] | None = None,
     ) -> SyncResult:
         bug, binding, project = self._binding(session, preview.bug_report_id)
+        current_base = _base_state(binding.base_snapshot)
         if (
             binding.id != preview.binding_id
             or project.gitlab_project_id != preview.project_id
             or binding.issue_iid != preview.issue_iid
-            or _base_snapshot(binding.base_snapshot) != preview.base
+            or current_base.snapshot != preview.base
+            or current_base.attachment_markdown
+            != preview.base_attachment_markdown
+            or current_base.pending_attachment_removals
+            != preview.pending_attachment_removals
+            or _local_attachment_markdown(current_base)
+            != preview.local_attachment_markdown
             or _local_snapshot(bug) != preview.local
         ):
             raise SyncPreviewStaleError("Local sync state changed after preview")
@@ -444,12 +563,46 @@ class GitLabSyncService:
             raise SyncPreviewStaleError("Remote Issue changed after preview")
 
         merge = three_way_merge(preview.base, preview.local, preview.remote)
-        desired = _resolve_conflicts(merge, resolutions)
-        pushed = desired != current_remote.snapshot
+        if preview.pending_attachment_removals:
+            (
+                merged_attachments,
+                _local_attachments_changed,
+                _remote_attachments_changed,
+                attachment_conflict,
+            ) = _merge_attachment_markdown(
+                preview.base_attachment_markdown,
+                preview.local_attachment_markdown,
+                preview.remote_attachment_markdown,
+            )
+        else:
+            merged_attachments = preview.remote_attachment_markdown
+            attachment_conflict = None
+        conflicts = merge.conflicts + (
+            (attachment_conflict,) if attachment_conflict else ()
+        )
+        choices = _validated_resolutions(conflicts, resolutions)
+        field_choices = {
+            name: choice for name, choice in choices.items() if name != "attachments"
+        }
+        desired = _resolve_conflicts(merge, field_choices)
+        if attachment_conflict is not None:
+            desired_attachments = (
+                preview.local_attachment_markdown
+                if choices["attachments"] == "local"
+                else preview.remote_attachment_markdown
+            )
+        else:
+            desired_attachments = merged_attachments
+        pushed = (
+            desired != current_remote.snapshot
+            or desired_attachments != current_remote.attachment_markdown
+        )
         verified = current_remote
         if pushed:
             try:
-                update_fields = self._update_fields(bug, current_remote, desired)
+                update_fields = self._update_fields(
+                    bug, current_remote, desired, desired_attachments
+                )
                 if update_fields:
                     put_remote = self._remote_issue(
                         self._client.update_issue(
@@ -465,7 +618,10 @@ class GitLabSyncService:
                         raise SyncVerificationError(
                             "GitLab Issue changed during the post-update control read"
                         )
-                if verified.snapshot != desired:
+                if (
+                    verified.snapshot != desired
+                    or verified.attachment_markdown != desired_attachments
+                ):
                     raise SyncVerificationError(
                         "GitLab Issue does not match the confirmed synchronization result"
                     )
@@ -487,11 +643,17 @@ class GitLabSyncService:
                     ) from error
                 raise
 
-        pulled = desired != preview.local
+        pulled = (
+            desired != preview.local
+            or (
+                bool(preview.pending_attachment_removals)
+                and desired_attachments != preview.local_attachment_markdown
+            )
+        )
         self._apply_local(bug, desired)
         binding.remote_updated_at = verified.updated_at
         binding.base_snapshot = _snapshot_json(
-            desired, verified.attachment_markdown
+            desired, desired_attachments
         )
         binding.sync_state = "synced"
         binding.last_error_type = None
@@ -613,7 +775,10 @@ class GitLabSyncService:
 
     @staticmethod
     def _update_fields(
-        bug: BugReport, remote: _RemoteIssue, desired: IssueSnapshot
+        bug: BugReport,
+        remote: _RemoteIssue,
+        desired: IssueSnapshot,
+        desired_attachment_markdown: tuple[str, ...],
     ) -> dict[str, Any]:
         desired_title = f"[{bug.id}] {desired.title}"
         desired_content = ManagedIssueContent(
@@ -625,7 +790,7 @@ class GitLabSyncService:
             environment=desired.environment,
             source_channel=desired.source_channel or None,
             external_reference=desired.external_reference or None,
-            attachment_markdown=remote.attachment_markdown,
+            attachment_markdown=desired_attachment_markdown,
         )
         desired_description = replace_managed_block(remote.description, desired_content)
         desired_labels = merge_managed_labels(

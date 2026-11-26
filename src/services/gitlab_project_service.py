@@ -50,6 +50,10 @@ class GitLabLabelPreviewError(GitLabProjectServiceError):
     """The confirmed preview does not belong to the selected profile."""
 
 
+class GitLabManagedLabelsMissingError(GitLabProjectServiceError):
+    """A previously prepared project no longer has every managed label."""
+
+
 @dataclass(frozen=True)
 class ManagedLabel:
     name: str
@@ -204,6 +208,19 @@ class GitLabProjectService:
         ):
             raise GitLabProjectResponseError(
                 "GitLab project changed after local validation"
+            )
+
+    def verify_managed_labels(self, project: GitLabProject) -> None:
+        """Read back every managed label before an Issue mutation."""
+
+        self.revalidate_project(project)
+        existing = self._get_existing_label_names(project.gitlab_project_id)
+        missing = tuple(
+            label.name for label in MANAGED_LABELS if label.name not in existing
+        )
+        if missing:
+            raise GitLabManagedLabelsMissingError(
+                "GitLab project managed labels are no longer ready"
             )
 
     def preview_label_bootstrap(

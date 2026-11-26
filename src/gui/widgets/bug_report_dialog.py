@@ -384,6 +384,9 @@ class BugReportDialog(QDialog):
         )
         if binding is not None:
             self.project_combo.setEnabled(False)
+            draft_index = self.status_combo.findText("Черновик")
+            if draft_index >= 0:
+                self.status_combo.model().item(draft_index).setEnabled(False)
 
     def _set_network_busy(self, busy: bool) -> None:
         self._network_busy = busy

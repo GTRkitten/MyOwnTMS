@@ -148,6 +148,10 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
    - `myowntms-severity-{critical|major|minor|trivial}`.
 7. Приложение обеспечивает ровно один label каждой управляемой группы и
    сохраняет все неуправляемые labels.
+8. Непосредственно перед publish приложение повторно читает проект и полный
+   набор managed labels. Если хотя бы один label исчез, Issue write блокируется,
+   локальный `labels_ready_at` сбрасывается, а оператор должен снова выполнить
+   preview и подтверждённый bootstrap. Publish не создаёт labels неявно.
 
 ### FR-5: Preview и публикация
 
@@ -190,7 +194,10 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
    автоматический повтор POST блокируется во избежание remote-дубликата.
 6. GitLab Markdown размещается только в секции `Вложения` managed block.
 7. Удаление локального вложения убирает ссылку из managed block, но не удаляет
-   GitLab upload автоматически.
+   GitLab upload автоматически. До удаления upload binding точный Markdown
+   фиксируется как pending removal; Sync показывает его в `base/local/remote`
+   preview, требует explicit resolution при concurrent remote edit и очищает
+   intent только после подтверждённого результата.
 8. Файлы, добавленные вручную в GitLab, автоматически локально не скачиваются.
 
 ### FR-7: Явная синхронизация
@@ -225,6 +232,8 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 3. Опубликованный баг нельзя hard-delete из главного окна.
 4. Удалённый или недоступный Issue получает состояние `remote_missing`; новый
    Issue автоматически не создаётся.
+5. После появления GitLab binding баг нельзя вернуть в `Черновик`; ограничение
+   действует и в GUI, и на service boundary.
 
 ### FR-9: GUI и состояния
 
@@ -352,13 +361,13 @@ explicit sync service добавлены в `TASK-GL-005`.
 | Task | Outcome | Status |
 |---|---|---|
 | TASK-DOC-001 | SRS, CONTEXT и implementation brief | Implemented locally |
-| TASK-SEC-001 | Runtime/user data больше не отслеживаются Git | Ready for clean initial commit; remote NOT CONFIGURED |
+| TASK-SEC-001 | Runtime/user data больше не отслеживаются Git | Local hygiene PASS; commit и remote уже существуют, push status не проверялся |
 | TASK-GL-001 | Test foundation и безопасные SQLite migrations | Implemented locally; focused tests PASS |
 | TASK-GL-002 | GitLab API client, TLS и session-only token | Implemented locally; MockTransport tests PASS |
 | TASK-GL-003 | Project profiles и label bootstrap | Implemented locally; service/API tests PASS |
 | TASK-GL-004 | Resumable publish и image uploads | Implemented locally; focused tests PASS |
 | TASK-GL-005 | Pull/push и field-level conflicts | Implemented locally; focused tests PASS |
-| TASK-GL-006 | PySide6 UX интеграции | Implemented locally; focused pytest-qt PASS |
+| TASK-GL-006 | PySide6 UX интеграции | Implemented locally; текущий GUI suite NOT RUN из-за `libEGL.so.1` |
 | TASK-GL-007 | Windows package и LAN acceptance | Local packaging preflight PASS; Windows/LAN NOT RUN |
 
 ## Testing and Acceptance Criteria
@@ -387,24 +396,27 @@ explicit sync service добавлены в `TASK-GL-005`.
 9. EXE на чистой Windows-машине доверяет внутреннему CA.
 10. Network capture показывает соединения только с настроенным GitLab origin.
 
-Текущий статус: clean import подготовлен без старой `.git`; локальные
-`TASK-SEC-001` denylist и redacted worktree/history secret scan выполнены
-успешно. `TASK-GL-001`: focused migration tests на временных SQLite DB —
-**6 passed**. `TASK-GL-002`: `httpx.MockTransport` API/TLS/error tests —
-**38 passed**. `TASK-GL-003`: focused project-profile/bootstrap tests —
-**14 passed**. `TASK-GL-004`: focused codec/publish/API tests — **47 passed**.
-`TASK-GL-005`: focused sync/lifecycle tests — **24 passed**. `TASK-GL-006`:
-focused headless `pytest-qt` — **8 passed**; полный локальный suite —
-**99 passed**; compileall — **PASS**.
-`TASK-GL-007`: PyInstaller `6.22.3` на Linux собрал one-file bundle; Analysis
-включил `httpx`, `httpcore`, `_ssl` и `certifi/cacert.pem`, а runtime data,
-GitLab config и PAT в spec не добавлены. Неграфический suite — **91 passed**;
-frozen startup и GUI suite на этом host не запустились из-за отсутствующей
-системной `libEGL.so.1`. Отдельный отчёт:
+Текущий локальный evidence 2026-11-26 относится к commit
+`8a88b6b1400f5d1c30558f7ffe060e2ef4144336` плюс незакоммиченным изменениям
+защиты labels, lifecycle вложений и published-Draft guard. Ветка — `dev`,
+`origin` настроен на GitHub; факт push текущего snapshot не проверялся.
+Runtime/user paths в index отсутствуют; denylist, redacted worktree/history
+secret scan, `compileall` и `git diff --check` — **PASS**.
+
+Неграфический изолированный suite — **102 passed**: migrations/models/test-env —
+**6**, project profiles/bootstrap — **14**, client/codec/publish — **55**,
+sync/lifecycle — **27**. Добавлены regressions для label drift перед publish,
+durable attachment removal с attachment conflict resolution и запрета возврата
+опубликованного бага в `Черновик`. В GUI-файле определено 10 focused tests,
+включая post-publish Draft guard, но текущий GUI suite — **NOT RUN**: импорт Qt
+останавливается на отсутствующей системной `libEGL.so.1`.
+
+Исторический Linux packaging preflight из `TASK-GL-007` остаётся PASS для
+зафиксированного в acceptance report snapshot, но bundle после последних
+незакоммиченных source-изменений не пересобирался. Реальная legacy/runtime DB,
+GitLab CI, manual responsiveness, clean Windows, реальный GitLab/TLS/role, LAN,
+migration/rollback drill и Windows EXE acceptance — **NOT RUN**. Подробности:
 [`GITLAB_V1_1_ACCEPTANCE.md`](GITLAB_V1_1_ACCEPTANCE.md).
-Реальная legacy/runtime DB не использовалась. Commit, remote, push, GitLab CI,
-manual responsiveness, clean Windows, реальный GitLab/TLS/role, LAN, migration/
-rollback drill и Windows EXE acceptance: **NOT RUN**.
 
 ## Known Issues and Risks
 
@@ -412,20 +424,22 @@ rollback drill и Windows EXE acceptance: **NOT RUN**.
 
 Clean import не содержит `dist/data/tms.db`, пользовательские изображения,
 build/dist outputs, Python bytecode, raw `context/` или исходную Git history;
-denylist не допускает их повторное отслеживание. Remote ещё не настроен. Старые
-blobs могут сохраняться во внешних clones/caches после предыдущей публикации;
-их удаление и возможная privacy/credential remediation требуют отдельного
-решения и не входят в clean import.
+denylist не допускает их повторное отслеживание. Сейчас commit и GitHub remote
+уже существуют, но содержимое внешнего remote и факт push текущего snapshot в
+этой локальной проверке не исследовались. Старые blobs могут сохраняться во
+внешних clones/caches после предыдущей публикации; их удаление и возможная
+privacy/credential remediation требуют отдельного решения.
 
 ### KR-2: Automated coverage is limited to TASK-GL-001–006
 
 Добавлены focused tests для backup/migration/idempotence/rollback, ORM schema и
 GitLab HTTP boundary через `MockTransport`, validated project profiles,
 idempotent label bootstrap, managed block/labels, uncertain create recovery,
-resumable uploads, pure three-way merge, explicit pull/push, conflicts,
-Close/Reopen, remote deletion, post-PUT control read и headless PySide6
-draft/publish/sync/conflict/delete/thread-lifecycle scenarios. Manual GUI
-responsiveness, реальный GitLab/TLS и Windows EXE ещё не покрыты. Local Linux
+resumable uploads, pre-publish label drift, durable attachment removal и
+attachment conflict, pure three-way merge, explicit pull/push, conflicts,
+Close/Reopen, published-Draft/delete guards, remote deletion и post-PUT control
+read. PySide6 regressions присутствуют в source, но на текущем host не запущены.
+Manual GUI responsiveness, реальный GitLab/TLS и Windows EXE ещё не покрыты. Local Linux
 packaging preflight выполнен, но environment acceptance остаётся открытой частью
 `TASK-GL-007`.
 

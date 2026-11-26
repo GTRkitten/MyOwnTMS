@@ -13,6 +13,10 @@ class PublishedBugDeleteError(ValueError):
     """A GitLab-bound bug must be closed instead of hard-deleted."""
 
 
+class PublishedBugDraftError(ValueError):
+    """A GitLab-bound bug cannot return to the local-only draft state."""
+
+
 class TestCaseService:
     """Сервис для тест-кейсов"""
     
@@ -199,6 +203,14 @@ class BugReportService:
         bug_report = BugReportService.get_by_id(session, bug_report_id)
         if not bug_report:
             return None
+
+        if (
+            bug_report.gitlab_binding is not None
+            and data.get('status') == 'Черновик'
+        ):
+            raise PublishedBugDraftError(
+                "Published bug reports cannot return to draft status"
+            )
 
         synchronized_fields = {
             'title', 'description', 'reproduction_steps', 'expected_result',

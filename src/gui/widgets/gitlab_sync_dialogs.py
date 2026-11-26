@@ -29,6 +29,7 @@ FIELD_LABELS = {
     "status": "Статус",
     "priority": "Приоритет",
     "severity": "Серьёзность",
+    "attachments": "Вложения",
 }
 
 
@@ -105,9 +106,12 @@ class SyncPreviewDialog(QDialog):
                 "Запись выполняется только после подтверждения."
             )
         )
-        table = QTableWidget(len(FIELD_LABELS), 5)
+        snapshot_fields = tuple(
+            name for name in FIELD_LABELS if name != "attachments"
+        )
+        table = QTableWidget(len(snapshot_fields), 5)
         table.setHorizontalHeaderLabels(["Поле", "Base", "Local", "Remote", "Итог"])
-        for row, name in enumerate(FIELD_LABELS):
+        for row, name in enumerate(snapshot_fields):
             table.setItem(row, 0, _item(FIELD_LABELS[name]))
             table.setItem(row, 1, _item(getattr(preview.base, name)))
             table.setItem(row, 2, _item(getattr(preview.local, name)))
@@ -117,6 +121,32 @@ class SyncPreviewDialog(QDialog):
         for column in range(1, 5):
             table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(table)
+
+        attachment_table = QTableWidget(1, 5)
+        attachment_table.setHorizontalHeaderLabels(
+            ["Поле", "Base", "Local", "Remote", "Итог"]
+        )
+        attachment_table.setItem(0, 0, _item(FIELD_LABELS["attachments"]))
+        for column, attribute in enumerate(
+            (
+                "base_attachment_markdown",
+                "local_attachment_markdown",
+                "remote_attachment_markdown",
+                "merged_attachment_markdown",
+            ),
+            start=1,
+        ):
+            attachment_table.setItem(
+                0, column, _item("\n".join(getattr(preview, attribute, ())))
+            )
+        attachment_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        for column in range(1, 5):
+            attachment_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Stretch
+            )
+        layout.addWidget(attachment_table)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
