@@ -9,6 +9,10 @@ from src.database.models import TestCase, BugReport, Attachment, ArtifactLink
 from src.services.id_generator import generate_id
 
 
+class PublishedBugDeleteError(ValueError):
+    """A GitLab-bound bug must be closed instead of hard-deleted."""
+
+
 class TestCaseService:
     """Сервис для тест-кейсов"""
     
@@ -125,7 +129,10 @@ class BugReportService:
             environment=data.get('environment', ''),
             priority=data.get('priority', 'Medium'),
             severity=data.get('severity', 'Major'),
-            status=data.get('status', 'New')
+            status=data.get('status', 'New'),
+            source_channel=data.get('source_channel'),
+            external_reference=data.get('external_reference'),
+            gitlab_project_id=data.get('gitlab_project_id'),
         )
         session.add(bug_report)
         session.commit()
@@ -192,10 +199,34 @@ class BugReportService:
         bug_report = BugReportService.get_by_id(session, bug_report_id)
         if not bug_report:
             return None
-        
+
+        synchronized_fields = {
+            'title', 'description', 'reproduction_steps', 'expected_result',
+            'actual_result', 'environment', 'source_channel',
+            'external_reference', 'status', 'priority', 'severity'
+        }
+        nullable_fields = {
+            'source_channel', 'external_reference', 'gitlab_project_id'
+        }
+        synchronized_change = any(
+            key in synchronized_fields
+            and hasattr(bug_report, key)
+            and getattr(bug_report, key) != value
+            for key, value in data.items()
+        )
         for key, value in data.items():
-            if hasattr(bug_report, key) and value is not None:
+            if (
+                hasattr(bug_report, key)
+                and (value is not None or key in nullable_fields)
+            ):
                 setattr(bug_report, key, value)
+
+        if (
+            synchronized_change
+            and bug_report.gitlab_binding is not None
+            and bug_report.gitlab_binding.sync_state in {'synced', 'remote_changed'}
+        ):
+            bug_report.gitlab_binding.sync_state = 'local_changed'
         
         bug_report.updated_at = datetime.now()
         session.commit()
@@ -208,6 +239,11 @@ class BugReportService:
         bug_report = BugReportService.get_by_id(session, bug_report_id)
         if not bug_report:
             return False
+
+        if bug_report.gitlab_binding is not None:
+            raise PublishedBugDeleteError(
+                "Published bug reports cannot be hard-deleted; close the Issue instead"
+            )
         
         session.delete(bug_report)
         session.commit()

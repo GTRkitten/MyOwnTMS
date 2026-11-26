@@ -17,22 +17,30 @@ from PySide6.QtGui import QIcon, QAction
 
 from src.config import APP_NAME, APP_VERSION, STYLE_PATH
 from src.database.session import get_session
-from src.services.artifact_service import ArtifactService, TestCaseService, BugReportService
+from src.services.artifact_service import (
+    ArtifactService,
+    BugReportService,
+    PublishedBugDeleteError,
+    TestCaseService,
+)
 from src.services.link_service import LinkService
 from src.services.attachment_service import AttachmentService
 from src.gui.widgets.test_case_dialog import TestCaseDialog
 from src.gui.widgets.bug_report_dialog import BugReportDialog
 from src.gui.widgets.artifact_detail_dialog import ArtifactDetailDialog
 from src.gui.widgets.export_dialog import ExportDialog
+from src.gui.gitlab_controller import GitLabSessionController
+from src.gui.widgets.gitlab_settings_dialog import GitLabSettingsDialog
 
 
 class MainWindow(QMainWindow):
     """Главное окно приложения"""
     
-    def __init__(self):
+    def __init__(self, session=None, gitlab_controller=None):
         super().__init__()
         self.current_tab = 'test_cases'
-        self.session = get_session()
+        self.session = session or get_session()
+        self.gitlab_controller = gitlab_controller or GitLabSessionController(self)
         self.current_artifacts = []
         self.selected_artifacts = []
         self.sort_column = None
@@ -128,6 +136,12 @@ class MainWindow(QMainWindow):
         delete_action.setShortcut("Del")
         delete_action.triggered.connect(self.delete_artifact)
         edit_menu.addAction(delete_action)
+
+        # GitLab
+        gitlab_menu = menubar.addMenu("GitLab")
+        settings_action = QAction("Настройки и проекты", self)
+        settings_action.triggered.connect(self.open_gitlab_settings)
+        gitlab_menu.addAction(settings_action)
         
         # Справка
         help_menu = menubar.addMenu("Справка")
@@ -326,9 +340,10 @@ class MainWindow(QMainWindow):
         
         # Таблица
         self.bug_reports_table = QTableWidget()
-        self.bug_reports_table.setColumnCount(7)
+        self.bug_reports_table.setColumnCount(9)
         self.bug_reports_table.setHorizontalHeaderLabels([
-            "ID", "Заголовок", "Статус", "Приоритет", "Серьезность", "Создан", "Обновлен"
+            "ID", "Заголовок", "Статус", "Приоритет", "Серьезность",
+            "GitLab project", "Sync", "Создан", "Обновлен"
         ])
         self.bug_reports_table.horizontalHeader().setStretchLastSection(True)
         self.bug_reports_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -646,8 +661,8 @@ class MainWindow(QMainWindow):
         
         if artifact_type == 'bug_report':
             column_mapping[4] = 'severity'
-            column_mapping[5] = 'created_at'
-            column_mapping[6] = 'updated_at'
+            column_mapping[7] = 'created_at'
+            column_mapping[8] = 'updated_at'
         else:
             column_mapping[4] = 'created_at'
             column_mapping[5] = 'updated_at'
@@ -693,14 +708,26 @@ class MainWindow(QMainWindow):
             self.bug_reports_table.setItem(row, 2, QTableWidgetItem(br.status))
             self.bug_reports_table.setItem(row, 3, QTableWidgetItem(br.priority))
             self.bug_reports_table.setItem(row, 4, QTableWidgetItem(br.severity))
-            self.bug_reports_table.setItem(row, 5, QTableWidgetItem(str(br.created_at)))
-            self.bug_reports_table.setItem(row, 6, QTableWidgetItem(str(br.updated_at)))
+            project_name = br.gitlab_project.display_name if br.gitlab_project else "—"
+            sync_state = br.gitlab_binding.sync_state if br.gitlab_binding else "local_only"
+            self.bug_reports_table.setItem(row, 5, QTableWidgetItem(project_name))
+            self.bug_reports_table.setItem(row, 6, QTableWidgetItem(sync_state))
+            self.bug_reports_table.setItem(row, 7, QTableWidgetItem(str(br.created_at)))
+            self.bug_reports_table.setItem(row, 8, QTableWidgetItem(str(br.updated_at)))
         
         self.bug_reports_table.resizeColumnsToContents()
     
     def create_artifact(self, artifact_type):
         """Создает новый артефакт"""
-        dialog = TestCaseDialog(self.session, parent=self) if artifact_type == 'test_case' else BugReportDialog(self.session, parent=self)
+        dialog = (
+            TestCaseDialog(self.session, parent=self)
+            if artifact_type == 'test_case'
+            else BugReportDialog(
+                self.session,
+                parent=self,
+                gitlab_controller=self.gitlab_controller,
+            )
+        )
         
         if dialog.exec() == 1:
             self.load_artifacts()
@@ -720,7 +747,16 @@ class MainWindow(QMainWindow):
         artifact_id = table.item(row, 0).text()
         artifact_type = 'test_case' if self.current_tab == 'test_cases' else 'bug_report'
         
-        dialog = TestCaseDialog(self.session, artifact_id, parent=self) if artifact_type == 'test_case' else BugReportDialog(self.session, artifact_id, parent=self)
+        dialog = (
+            TestCaseDialog(self.session, artifact_id, parent=self)
+            if artifact_type == 'test_case'
+            else BugReportDialog(
+                self.session,
+                artifact_id,
+                parent=self,
+                gitlab_controller=self.gitlab_controller,
+            )
+        )
         
         if dialog.exec() == 1:
             self.load_artifacts()
@@ -754,6 +790,18 @@ class MainWindow(QMainWindow):
         artifact_type = 'test_case' if self.current_tab == 'test_cases' else 'bug_report'
         artifact_name = 'тест-кейсов' if artifact_type == 'test_case' else 'баг-репортов'
         count = len(selected_rows)
+
+        if artifact_type == 'bug_report':
+            for index in selected_rows:
+                artifact_id = table.item(index.row(), 0).text()
+                bug = BugReportService.get_by_id(self.session, artifact_id)
+                if bug is not None and bug.gitlab_binding is not None:
+                    QMessageBox.warning(
+                        self,
+                        "Удаление запрещено",
+                        "Опубликованный баг нельзя удалить. Закройте его через синхронизацию.",
+                    )
+                    return
         
         # Проверяем связи
         has_links = False
@@ -788,7 +836,11 @@ class MainWindow(QMainWindow):
                 if artifact_type == 'test_case':
                     TestCaseService.delete(self.session, artifact_id)
                 else:
-                    BugReportService.delete(self.session, artifact_id)
+                    try:
+                        BugReportService.delete(self.session, artifact_id)
+                    except PublishedBugDeleteError as error:
+                        QMessageBox.warning(self, "Удаление запрещено", str(error))
+                        return
             
             self.load_artifacts()
             self.statusBar().showMessage(f"Удалено {count} артефактов")
@@ -840,6 +892,15 @@ class MainWindow(QMainWindow):
             <p>© 2026 MyOwnTMS</p>
             """
         )
+
+    def open_gitlab_settings(self):
+        """Open runtime-only connection settings without making startup requests."""
+        dialog = GitLabSettingsDialog(
+            self.session, self.gitlab_controller, parent=self
+        )
+        dialog.exec()
+        self.session.expire_all()
+        self.load_artifacts()
     
     def deselect_all(self):
         """Снимает выделение со всех артефактов"""
@@ -849,5 +910,6 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Обрабатывает закрытие окна"""
+        self.gitlab_controller.shutdown()
         self.session.close()
         event.accept()

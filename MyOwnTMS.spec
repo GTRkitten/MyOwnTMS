@@ -1,16 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+# Keep bundled documentation on an explicit allowlist. Runtime data, databases,
+# CA bundles, GitLab settings, and PAT values must remain external to the EXE.
+PUBLIC_DATA_FILES = [
+    ('src/gui/styles', 'gui/styles'),
+    ('MIGRATION_GUIDE.md', '.'),
+    ('README.md', '.'),
+    ('USAGE.md', '.'),
+]
+
+
 a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('src/gui/styles', 'gui/styles'),
-        ('MIGRATION_GUIDE.md', '.'),
-        ('README.md', '.'),
-        ('USAGE.md', '.'),
-    ],
+    datas=PUBLIC_DATA_FILES,
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',

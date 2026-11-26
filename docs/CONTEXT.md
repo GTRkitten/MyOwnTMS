@@ -68,8 +68,8 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 - `docs/SRS.md` — создан.
 - `docs/CONTEXT.md` — создан.
 - `docs/SESSION_BRIEF_GITLAB_ISSUES.md` — создан.
-- GitLab API adapter, project-profile/label-bootstrap и resumable publish
-  services реализованы; sync и GUI ещё не начаты.
+- GitLab API adapter, project-profile/label-bootstrap, resumable publish,
+  explicit sync и PySide6 GUI интеграции реализованы локально.
 
 ### TASK-SEC-001
 
@@ -144,9 +144,60 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
   фиксируют attachment ID, SHA-256 и remote metadata после каждого файла.
 - Partial upload сохраняет Issue и завершённые bindings; restart продолжает без
   повторной загрузки уже зафиксированных файлов.
+- Если GitLab принял upload, но ответ потерян, незавершённый binding блокирует
+  автоматический повтор POST, чтобы не создавать второй remote upload; такой
+  исход требует операторской сверки.
 - Финальное обновление сохраняет текст вне managed block и unmanaged labels.
 - Focused codec/publish/API tests: `47 passed`; весь изолированный suite:
   `67 passed`. Реальный GitLab/TLS/LAN и GUI — **NOT RUN**.
+
+### TASK-GL-005
+
+- Добавлены pure normalized snapshots и field-level three-way merge для
+  `base/local/remote`; preview различает pull, push, non-overlapping merge,
+  conflict и no-op.
+- `GitLabSyncService` повторно проверяет local/remote перед подтверждением,
+  сохраняет внешний Markdown и unmanaged labels, а после каждого PUT выполняет
+  контрольный GET.
+- Corrupt/missing/unknown managed block и несогласованные managed labels/state
+  fail-closed; удалённый/недоступный Issue получает `remote_missing` без
+  auto-republish.
+- Close/Reopen синхронизируются через status label + Issue state; каждый
+  same-field conflict требует явного выбора local/remote.
+- Обычное service-level редактирование опубликованного бага переводит binding
+  из `synced`/`remote_changed` в `local_changed`.
+- Hard-delete любого GitLab-bound bug заблокирован на service boundary.
+- Focused sync/lifecycle tests: `24 passed`; весь изолированный suite:
+  `91 passed`. Реальный GitLab/TLS/LAN и GUI conflict flow — **NOT RUN**.
+
+### TASK-GL-006
+
+- Добавлены runtime-only настройки origin/internal CA/PAT, проверка соединения,
+  управление validated project profiles и preview/confirm bootstrap labels.
+- Bug dialog поддерживает неполный `Черновик`, project/source/reference/sync
+  state, локальное сохранение, preview/publish, sync и безопасное открытие Issue.
+- Main table показывает project/sync state; conflict dialog отображает
+  base/local/remote и требует выбор для каждого конфликтующего поля.
+- GitLab-операции выполняются через `QThreadPool` с отдельными DB sessions;
+  progress/buttons исключают повторный запуск, а Qt auto-disconnect не доставляет
+  результат уничтоженному widget.
+- Focused headless `pytest-qt`: `8 passed`; весь изолированный suite:
+  `99 passed`. Manual responsiveness, real GitLab/TLS/LAN и Windows EXE —
+  **NOT RUN**.
+
+### TASK-GL-007
+
+- `MyOwnTMS.spec` сохраняет явный allowlist public documentation/style assets;
+  runtime data, SQLite DB, CA bundle, GitLab config и PAT в EXE не добавляются.
+- PyInstaller `6.22.3` на Linux собрал one-file bundle; Analysis включил
+  `httpx`, `httpcore`, `_ssl`, TLS libraries и `certifi/cacert.pem`.
+- Неграфический изолированный suite: `91 passed`; hygiene и redacted secret scan
+  — **PASS**.
+- Frozen Linux startup и GUI suite остановились на отсутствующей системной
+  `libEGL.so.1`; это не Windows acceptance.
+- Отдельный отчёт и runbook: `docs/GITLAB_V1_1_ACCEPTANCE.md`.
+- Clean Windows, real GitLab/internal CA/LAN, migration/rollback, outage/PAT
+  restart и egress capture — **NOT RUN**; задача остаётся открытой.
 
 ### План v1.1
 
@@ -157,9 +208,9 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 | TASK-GL-002 | Implemented locally — MockTransport tests PASS; real GitLab NOT RUN |
 | TASK-GL-003 | Implemented locally — service/API tests PASS; GUI/real GitLab NOT RUN |
 | TASK-GL-004 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
-| TASK-GL-005 | Planned |
-| TASK-GL-006 | Planned |
-| TASK-GL-007 | Planned |
+| TASK-GL-005 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
+| TASK-GL-006 | Implemented locally — focused pytest-qt PASS; real GitLab/LAN NOT RUN |
+| TASK-GL-007 | Local packaging preflight PASS; Windows/LAN acceptance NOT RUN |
 
 ## Ключевые решения v1.1
 
@@ -200,6 +251,7 @@ denylist и `.gitignore` добавлены. Remote, commit и push ещё не 
 |---|---|
 | Спецификация | `docs/SRS.md` |
 | Implementation brief | `docs/SESSION_BRIEF_GITLAB_ISSUES.md` |
+| Windows/LAN acceptance report | `docs/GITLAB_V1_1_ACCEPTANCE.md` |
 | Обзор/установка | `README.md` |
 | Инструкция пользователя | `USAGE.md` |
 | Модели | `src/database/models.py` |
@@ -213,6 +265,7 @@ denylist и `.gitignore` добавлены. Remote, commit и push ещё не 
 | GitLab project profiles/labels | `src/services/gitlab_project_service.py` |
 | GitLab managed block/labels | `src/services/gitlab_issue_codec.py` |
 | GitLab resumable publish | `src/services/gitlab_publish_service.py` |
+| GitLab explicit sync/merge | `src/services/gitlab_sync_service.py` |
 | EXE config | `MyOwnTMS.spec` |
 
 ## Команды
@@ -227,17 +280,17 @@ pyinstaller MyOwnTMS.spec
 # Текущая статическая проверка Python без запуска GUI
 python3 -m compileall -q src tests run.py
 
-# Изолированные тесты TASK-GL-001–004
+# Изолированные тесты TASK-GL-001–007
 python3 -m pip install -r requirements-dev.txt
-python3 -m pytest -p no:pytest-qt
+QT_QPA_PLATFORM=offscreen python3 -m pytest
 
 # Проверка Markdown whitespace после изменения документации
 git diff --check
 ```
 
-Qt plugin пока отключён в focused DB run: GUI-тесты появляются только в
-`TASK-GL-006`. Не утверждать, что GitLab, LAN, Windows EXE или реальная legacy-БД
-прошли acceptance.
+В headless Linux для Qt может понадобиться системная `libEGL.so.1`. Не утверждать,
+что manual responsiveness, реальный GitLab, LAN, Windows EXE или реальная
+legacy-БД прошли acceptance.
 
 ## Как продолжать работу
 

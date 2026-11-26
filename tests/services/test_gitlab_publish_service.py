@@ -18,6 +18,7 @@ from src.database.models import (
 from src.integrations.gitlab_client import (
     GitLabApiClient,
     GitLabClientConfig,
+    GitLabServerError,
     SessionToken,
 )
 from src.services.gitlab_publish_service import (
@@ -39,11 +40,11 @@ def database():
         engine.dispose()
 
 
-def _client(handler):
+def _client(handler, *, origin="https://gitlab.internal"):
     token = SessionToken()
     token.set("session-only-test-token")
     return GitLabApiClient(
-        GitLabClientConfig("https://gitlab.internal"),
+        GitLabClientConfig(origin),
         token,
         transport=httpx.MockTransport(handler),
     )
@@ -106,6 +107,18 @@ def _issue_payload(description, labels, *, updated="2026-11-25T12:00:00Z"):
     }
 
 
+def _project_payload(**overrides):
+    payload = {
+        "id": 11,
+        "path_with_namespace": "customers/project-a",
+        "web_url": "https://gitlab.internal/customers/project-a",
+        "visibility": "private",
+        "archived": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_preview_is_read_only_lists_all_files_and_validates_publish_fields(
     database, tmp_path
 ):
@@ -145,6 +158,83 @@ def test_preview_is_read_only_lists_all_files_and_validates_publish_fields(
     session.close()
 
 
+def test_preview_rejects_project_from_different_origin_without_network(
+    database, tmp_path
+):
+    session = database()
+    bug, project = _seed(session, tmp_path)
+    project.web_url = "https://gitlab-a.internal/customers/project-a"
+    session.commit()
+    requests = []
+
+    with _client(
+        lambda request: requests.append(request),
+        origin="https://gitlab-b.internal",
+    ) as client:
+        with pytest.raises(PublishValidationError, match="different configured origin"):
+            GitLabPublishService(client).preview(session, bug.id)
+
+    assert requests == []
+    assert session.query(GitLabBinding).count() == 0
+    session.close()
+
+
+@pytest.mark.parametrize(
+    "remote_project",
+    [
+        _project_payload(id=12),
+        _project_payload(
+            path_with_namespace="customers/renamed",
+            web_url="https://gitlab.internal/customers/renamed",
+        ),
+        _project_payload(visibility="internal"),
+        _project_payload(archived=True),
+    ],
+)
+def test_publish_revalidates_project_before_local_or_remote_mutation(
+    database, tmp_path, remote_project
+):
+    session = database()
+    bug, _ = _seed(session, tmp_path)
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        assert request.method == "GET"
+        assert request.url.path.endswith("/projects/11")
+        return httpx.Response(200, json=remote_project)
+
+    with _client(handler) as client:
+        service = GitLabPublishService(client)
+        preview = service.preview(session, bug.id)
+        with pytest.raises(PublishValidationError, match="safely revalidated"):
+            service.publish(session, bug.id, preview)
+
+    assert requests == [("GET", "/api/v4/projects/11")]
+    assert session.query(GitLabBinding).count() == 0
+    session.close()
+
+
+def test_publish_revalidation_network_failure_leaves_no_binding(database, tmp_path):
+    session = database()
+    bug, _ = _seed(session, tmp_path)
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(500, json={})
+
+    with _client(handler) as client:
+        service = GitLabPublishService(client)
+        preview = service.preview(session, bug.id)
+        with pytest.raises(GitLabServerError):
+            service.publish(session, bug.id, preview)
+
+    assert requests == [("GET", "/api/v4/projects/11")]
+    assert session.query(GitLabBinding).count() == 0
+    session.close()
+
+
 def test_uncertain_create_recovers_exact_marker_without_duplicate(database, tmp_path):
     session = database()
     bug, _ = _seed(session, tmp_path)
@@ -154,6 +244,8 @@ def test_uncertain_create_recovers_exact_marker_without_duplicate(database, tmp_
 
     def handler(request):
         nonlocal issue, create_calls, search_calls
+        if request.method == "GET" and request.url.path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
         if request.method == "POST" and request.url.path.endswith("/issues"):
             create_calls += 1
             body = json.loads(request.read())
@@ -189,6 +281,8 @@ def test_timeout_before_create_is_retried_only_after_marker_search(database, tmp
     def handler(request):
         nonlocal issue, post_attempts, search_calls
         path = request.url.path
+        if request.method == "GET" and path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
         if request.method == "GET" and path.endswith("/issues"):
             search_calls += 1
             return httpx.Response(200, json=[] if issue is None else [issue])
@@ -233,6 +327,8 @@ def test_partial_upload_resumes_after_new_session_without_reuploading_completed_
     def handler(request):
         nonlocal issue, create_calls, fail_second_once
         path = request.url.path
+        if request.method == "GET" and path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
         if request.method == "POST" and path.endswith("/issues"):
             create_calls += 1
             body = json.loads(request.read())
@@ -250,7 +346,9 @@ def test_partial_upload_resumes_after_new_session_without_reuploading_completed_
             upload_calls[upload_name] = upload_calls.get(upload_name, 0) + 1
             if upload_name.startswith("attachment-2-") and fail_second_once:
                 fail_second_once = False
-                return httpx.Response(500, json={})
+                return httpx.Response(
+                    429, headers={"Retry-After": "1"}, json={}
+                )
             attachment_id = upload_name.split("-", 2)[1]
             return httpx.Response(
                 201,
@@ -276,7 +374,7 @@ def test_partial_upload_resumes_after_new_session_without_reuploading_completed_
             service.publish(first_session, bug.id, preview)
 
     assert raised.value.issue_created is True
-    assert first_session.query(GitLabAttachmentBinding).count() == 2
+    assert first_session.query(GitLabAttachmentBinding).count() == 1
     assert (
         first_session.query(GitLabAttachmentBinding)
         .filter(GitLabAttachmentBinding.uploaded_at.is_not(None))
@@ -306,6 +404,56 @@ def test_partial_upload_resumes_after_new_session_without_reuploading_completed_
     restarted_session.close()
 
 
+def test_lost_upload_response_blocks_retry_without_duplicate(database, tmp_path):
+    session = database()
+    bug, _ = _seed(session, tmp_path, attachments=1)
+    issue = None
+    upload_calls = 0
+
+    def handler(request):
+        nonlocal issue, upload_calls
+        path = request.url.path
+        if request.method == "GET" and path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
+        if request.method == "POST" and path.endswith("/issues"):
+            body = json.loads(request.read())
+            issue = _issue_payload(body["description"], body["labels"].split(","))
+            return httpx.Response(201, json=issue)
+        if request.method == "GET" and path.endswith("/issues/7"):
+            return httpx.Response(200, json=issue)
+        if request.method == "POST" and path.endswith("/uploads"):
+            upload_calls += 1
+            request.read()  # The server accepted the complete multipart body.
+            raise httpx.ReadTimeout("upload response lost", request=request)
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    with _client(handler) as client:
+        service = GitLabPublishService(client)
+        preview = service.preview(session, bug.id)
+        with pytest.raises(GitLabPublishResumableError) as first_error:
+            service.publish(session, bug.id, preview)
+
+        bug_id = bug.id
+        session.close()
+        restarted_session = database()
+        retry_preview = service.preview(restarted_session, bug_id)
+        with pytest.raises(GitLabPublishResumableError) as retry_error:
+            service.publish(restarted_session, bug_id, retry_preview)
+
+    assert first_error.value.retry_safe is False
+    assert retry_error.value.retry_safe is False
+    assert upload_calls == 1
+    pending = restarted_session.query(GitLabAttachmentBinding).one()
+    assert pending.remote_upload_id is None
+    assert pending.uploaded_at is None
+    restarted_bug = restarted_session.get(BugReport, bug_id)
+    assert (
+        restarted_bug.gitlab_binding.last_error_type
+        == "PublishUploadOutcomeUncertainError"
+    )
+    restarted_session.close()
+
+
 def test_final_update_preserves_outside_text_and_unmanaged_labels(database, tmp_path):
     session = database()
     bug, _ = _seed(session, tmp_path)
@@ -315,6 +463,8 @@ def test_final_update_preserves_outside_text_and_unmanaged_labels(database, tmp_
     def handler(request):
         nonlocal issue, final_body
         path = request.url.path
+        if request.method == "GET" and path.endswith("/projects/11"):
+            return httpx.Response(200, json=_project_payload())
         if request.method == "POST" and path.endswith("/issues"):
             body = json.loads(request.read())
             issue = _issue_payload(body["description"], body["labels"].split(","))

@@ -243,9 +243,9 @@ GitLab, internal CA, LAN, GUI и Windows EXE — NOT RUN.
 8. Partial upload/publish имеет resumable error и не удаляет remote Issue.
 9. Текст вне managed block и unmanaged labels сохраняются.
 
-**Validate with:** unit/API tests happy path, timeout before/after response,
-existing marker, changed/missing file, duplicate filename/hash, partial upload и
-resume after process restart.
+**Validate with:** unit/API tests happy path, timeout before/after Issue create,
+потерянный upload response, existing marker, changed/missing file, duplicate
+filename/hash, partial upload и resume after process restart.
 
 **Evidence 2026-11-25:**
 
@@ -264,6 +264,11 @@ resume after process restart.
   имя не содержит локальный path и включает attachment ID;
 - bindings используют attachment ID + SHA-256; каждый успешный upload сохраняет
   remote ID/URL/Markdown отдельно, а restart переиспользует завершённые bindings;
+- upload intent сохраняется до POST; после timeout, обрыва, 5xx или потерянного /
+  malformed success-response автоматический повтор этого upload блокируется,
+  потому что GitLab upload API не принимает idempotency key и без ответа не
+  возвращает recoverable URL/Markdown; однозначный отказ удаляет intent и
+  допускает явный повтор;
 - partial upload возвращает безопасный resumable error и не удаляет Issue;
   финальный GET/PUT сохраняет внешний текст и unmanaged labels;
 - focused codec/publish/API command — **47 passed**; полный изолированный suite
@@ -271,9 +276,17 @@ resume after process restart.
   `git diff --check` — **PASS**;
 - real GitLab/TLS/LAN, GUI и Windows EXE — **NOT RUN**.
 
+**Correction evidence 2026-11-26:** lost-response regression сохраняет
+незавершённый intent между DB sessions и подтверждает один upload POST после
+явного повтора; publish/client tests — **51 passed**, весь неграфический
+DB/integration/service suite — **97 passed**. Реальный GitLab — **NOT RUN**.
+
 ## TASK-GL-005 — sync, conflicts и lifecycle
 
 **Dependencies:** `TASK-GL-004`.
+
+**Status:** Implemented locally. Focused sync/lifecycle tests PASS; real GitLab,
+internal CA, LAN, GUI conflict flow и Windows EXE — NOT RUN.
 
 **Outcome:** Явный pull/push синхронизирует основные поля без молчаливой потери
 изменений.
@@ -294,9 +307,34 @@ resume after process restart.
 **Validate with:** pure merge matrix и API tests всех sync states, managed/unmanaged
 content, inconsistent labels/state, remote deletion и concurrent changes.
 
+**Evidence 2026-11-25:**
+
+- normalized base snapshot совместим с publish snapshot и обновляется только
+  после успешного pull либо подтверждённого PUT + control GET;
+- pure merge покрывает no-op, local-only, remote-only, non-overlapping changes и
+  same-field conflicts с обязательным выбором local/remote для каждого поля;
+- preview повторно проверяется по local state и полной remote revision перед
+  write; внешний Markdown и unmanaged labels сохраняются;
+- missing/corrupt/version-unknown block, duplicate/unknown managed labels,
+  identity mismatch и inconsistent status/state fail-closed;
+- remote `404` сохраняет `remote_missing` и не выполняет create/re-publish;
+  другие API failures сохраняют безопасный `error` metadata;
+- Close/Reopen проверены в обе стороны; hard-delete GitLab-bound bug блокируется
+  в `BugReportService`, а обычное редактирование меняет sync state на
+  `local_changed`;
+- после PUT выполняется контрольный GET; изменение между PUT и control read
+  переводит binding в `conflict`. Неатомарная GET→PUT race остаётся
+  документированным ограничением GitLab Issues API;
+- focused command — **24 passed**; полный изолированный suite — **91 passed**;
+  `python3 -m compileall -q src tests run.py` и `git diff --check` — **PASS**;
+- real GitLab/TLS/LAN, GUI conflict flow и Windows EXE — **NOT RUN**.
+
 ## TASK-GL-006 — PySide6 UX
 
 **Dependencies:** `TASK-GL-003`, `TASK-GL-004`, `TASK-GL-005`.
+
+**Status:** Implemented locally. Focused headless pytest-qt and full isolated
+suite PASS; manual responsiveness, real GitLab/TLS/LAN and Windows EXE — NOT RUN.
 
 **Outcome:** Вся интеграция доступна через понятный GUI без блокировки event loop.
 
@@ -316,9 +354,29 @@ content, inconsistent labels/state, remote deletion и concurrent changes.
 **Validate with:** focused `pytest-qt` для draft/publish/sync/conflict/delete
 guard и ручной responsiveness smoke. Реальный LAN остаётся `NOT RUN`.
 
+**Evidence 2026-11-25:**
+
+- runtime-only settings покрывают origin, internal CA, session PAT, connection
+  test, validated projects и explicit label preview/confirm;
+- bug dialog поддерживает draft/project/source/reference/sync state и действия
+  Save locally, Preview/Publish, Sync и Open in GitLab; main table показывает
+  project/sync state;
+- publish/sync preview показывают передаваемые данные, conflict dialog требует
+  local/remote выбор по каждому конфликтующему полю;
+- network operations используют `QThreadPool`, отдельную SQLAlchemy session,
+  busy/progress state и Qt auto-disconnect для уничтоженных widgets;
+- focused headless pytest-qt command — **8 passed**; полный изолированный suite
+  — **99 passed**; `python3 -m compileall -q src tests run.py` и
+  `git diff --check` — **PASS**;
+- manual responsiveness, real GitLab/TLS/LAN, GitLab CI и Windows EXE —
+  **NOT RUN**.
+
 ## TASK-GL-007 — package и LAN acceptance
 
 **Dependencies:** `TASK-GL-001`–`TASK-GL-006`.
+
+**Status:** Local packaging preflight PASS; clean Windows, real GitLab/internal
+CA/LAN, migration/rollback drill and egress capture — NOT RUN. Task remains open.
 
 **Outcome:** Собранный Windows EXE подтверждён на реальном изолированном GitLab.
 
@@ -339,14 +397,34 @@ guard и ручной responsiveness smoke. Реальный LAN остаётс�
 результатами и rollback. Production-like rollout без явного разрешения не
 выполнять.
 
+**Evidence 2026-11-26:**
+
+- `MyOwnTMS.spec` использует explicit allowlist только для public documentation
+  и style assets; runtime data/DB, CA bundle, GitLab config и PAT не включаются;
+- PyInstaller `6.22.3` + hooks-contrib `2026.10` на Linux успешно собрал
+  one-file bundle; Analysis содержит `httpx`, `httpcore`, `_ssl`, TLS libraries
+  и `certifi/cacert.pem`;
+- неграфический изолированный suite — **91 passed**; Git hygiene и redacted
+  worktree/history secret scan — **PASS**;
+- frozen Linux startup и полный GUI suite — **NOT RUN/PRECONDITION FAILED**:
+  host не содержит системную `libEGL.so.1`; Linux bundle не является Windows EXE;
+- создан отдельный точный report/runbook:
+  `docs/GITLAB_V1_1_ACCEPTANCE.md`;
+- clean Windows build/start, representative legacy DB migration/rollback,
+  real Private GitLab/internal CA create/upload/sync/conflict/close, outage,
+  restart PAT и network/firewall capture — **NOT RUN**.
+
 ## Известные риски для проверки
 
 - В Git index уже находятся runtime DB, attachments, build/dist и raw histories.
 - GitLab ещё не развёрнут: edition/version/roles/limits неизвестны.
-- Test coverage пока ограничен `TASK-GL-001`–004; sync/GUI и реальный GitLab не
-  проверены.
+- Test coverage ограничен локальными `TASK-GL-001`–006; manual responsiveness и
+  реальный GitLab не проверены.
 - REST Issue update не предоставляет атомарный compare-and-swap между GET/PUT.
 - GitLab upload и SQLite не являются общей транзакцией.
+- После неопределённого upload outcome публикация остаётся в error до
+  операторской сверки: автоматический POST запрещён, поскольку API не позволяет
+  безопасно восстановить потерянные URL/Markdown.
 - Remote upload может остаться на GitLab после удаления локальной ссылки.
 - Реальные вложения могут содержать PII; preview не заменяет ручную проверку
   оператором.

@@ -191,6 +191,21 @@ class GitLabProjectService:
         session.refresh(project)
         return project
 
+    def revalidate_project(self, project: GitLabProject) -> None:
+        """Fail closed unless a stored profile still identifies the same project."""
+
+        if not isinstance(project, GitLabProject):
+            raise GitLabProjectResponseError("GitLab project profile is invalid")
+        remote = self._get_validated_remote_project(project.gitlab_project_id)
+        if (
+            remote.path_with_namespace != project.path_with_namespace
+            or remote.web_url != project.web_url
+            or remote.visibility != project.visibility
+        ):
+            raise GitLabProjectResponseError(
+                "GitLab project changed after local validation"
+            )
+
     def preview_label_bootstrap(
         self, session: Session, local_project_id: int
     ) -> LabelBootstrapPreview:

@@ -39,6 +39,10 @@ from src.services.gitlab_issue_codec import (
     replace_managed_block,
     serialize_managed_block,
 )
+from src.services.gitlab_project_service import (
+    GitLabProjectService,
+    GitLabProjectServiceError,
+)
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -77,16 +81,42 @@ class PublishRemoteResponseError(GitLabPublishError):
     """GitLab returned unsafe or incomplete publish metadata."""
 
 
-class GitLabPublishResumableError(GitLabPublishError):
-    """A persisted publication can be resumed without deleting its Issue."""
+class PublishUploadOutcomeUncertainError(GitLabPublishError):
+    """An upload may exist remotely but cannot be bound without its response."""
 
-    def __init__(self, *, issue_created: bool, error_type: str) -> None:
+    def __init__(
+        self, message: str, *, original_error: BaseException | None = None
+    ) -> None:
+        self.status_code = getattr(original_error, "status_code", None)
+        self.request_id = getattr(original_error, "request_id", None)
+        super().__init__(message)
+
+
+_UNCERTAIN_UPLOAD_ERRORS = (
+    *_UNCERTAIN_CREATE_ERRORS,
+    PublishRemoteResponseError,
+)
+
+
+class GitLabPublishResumableError(GitLabPublishError):
+    """A persisted publication stopped after a recoverable or uncertain failure."""
+
+    def __init__(
+        self, *, issue_created: bool, error_type: str, retry_safe: bool = True
+    ) -> None:
         self.issue_created = issue_created
         self.error_type = error_type
-        super().__init__(
-            "GitLab publication is incomplete and can be resumed"
-            + ("; the remote Issue was retained" if issue_created else "")
-        )
+        self.retry_safe = retry_safe
+        if retry_safe:
+            message = "GitLab publication is incomplete and can be resumed"
+        else:
+            message = (
+                "GitLab upload outcome is uncertain; automatic retry is blocked "
+                "to prevent a duplicate upload"
+            )
+        if issue_created:
+            message += "; the remote Issue was retained"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -330,6 +360,7 @@ class GitLabPublishService:
             )
         bug = session.get(BugReport, bug_report_id)
         project = self._validated_project(bug)
+        self._revalidate_project(project)
         binding, created_locally = self._get_or_create_binding(session, bug, project)
 
         uploaded_ids: list[int] = []
@@ -368,18 +399,37 @@ class GitLabPublishService:
                     markdown.append(attachment_binding.remote_markdown)
                     reused_ids.append(attachment.id)
                     continue
-                attachment_binding = self._pending_attachment_binding(
-                    session, binding, attachment, digest
+                attachment_binding, upload_intent_created = (
+                    self._pending_attachment_binding(
+                        session, binding, attachment, digest
+                    )
                 )
-                upload = self._client.upload_file(
-                    project.gitlab_project_id,
-                    file_name=upload_name,
-                    content=content,
-                    content_type=content_type,
-                )
-                remote_upload_id, remote_url, remote_markdown = (
-                    self._validated_upload(upload)
-                )
+                if not upload_intent_created:
+                    raise PublishUploadOutcomeUncertainError(
+                        "A previous upload attempt has no recoverable response metadata"
+                    )
+                try:
+                    upload = self._client.upload_file(
+                        project.gitlab_project_id,
+                        file_name=upload_name,
+                        content=content,
+                        content_type=content_type,
+                    )
+                    remote_upload_id, remote_url, remote_markdown = (
+                        self._validated_upload(upload)
+                    )
+                except _UNCERTAIN_UPLOAD_ERRORS as error:
+                    raise PublishUploadOutcomeUncertainError(
+                        "GitLab may have stored the upload, but its response metadata "
+                        "was not received",
+                        original_error=error,
+                    ) from error
+                except GitLabClientError:
+                    # A definitive rejection did not create an upload, so a later
+                    # explicit publish may safely create a fresh intent and retry.
+                    session.delete(attachment_binding)
+                    session.commit()
+                    raise
                 attachment_binding.remote_upload_id = remote_upload_id
                 attachment_binding.remote_url = remote_url
                 attachment_binding.remote_markdown = remote_markdown
@@ -453,10 +503,12 @@ class GitLabPublishService:
             raise GitLabPublishResumableError(
                 issue_created=binding.issue_iid is not None,
                 error_type=type(error).__name__,
+                retry_safe=not isinstance(
+                    error, PublishUploadOutcomeUncertainError
+                ),
             ) from error
 
-    @staticmethod
-    def _validated_project(bug: BugReport) -> GitLabProject:
+    def _validated_project(self, bug: BugReport) -> GitLabProject:
         if bug is None or bug.gitlab_project is None:
             raise PublishValidationError("A GitLab project is required")
         project = bug.gitlab_project
@@ -464,7 +516,21 @@ class GitLabPublishService:
             raise PublishValidationError("The GitLab project is not active and private")
         if project.labels_ready_at is None:
             raise PublishValidationError("The GitLab project labels are not ready")
+        if _origin(project.web_url) != _origin(self._client.origin):
+            raise PublishValidationError(
+                "The GitLab project belongs to a different configured origin"
+            )
         return project
+
+    def _revalidate_project(self, project: GitLabProject) -> None:
+        """Recheck remote identity and safety properties before any publish mutation."""
+
+        try:
+            GitLabProjectService(self._client).revalidate_project(project)
+        except GitLabProjectServiceError as error:
+            raise PublishValidationError(
+                "The GitLab project could not be safely revalidated"
+            ) from error
 
     @staticmethod
     def _validated_bug_values(bug: BugReport) -> dict[str, str]:
@@ -729,7 +795,7 @@ class GitLabPublishService:
         binding: GitLabBinding,
         attachment: Attachment,
         digest: str,
-    ) -> GitLabAttachmentBinding:
+    ) -> tuple[GitLabAttachmentBinding, bool]:
         candidate = (
             session.query(GitLabAttachmentBinding)
             .filter_by(attachment_id=attachment.id, content_sha256=digest)
@@ -744,9 +810,10 @@ class GitLabPublishService:
             session.add(candidate)
             session.commit()
             session.refresh(candidate)
+            return candidate, True
         elif candidate.gitlab_binding_id != binding.id:
             raise PublishBindingConflictError("Attachment is bound to another Issue")
-        return candidate
+        return candidate, False
 
     def _validated_upload(self, payload: Mapping[str, Any]) -> tuple[str, str, str]:
         if not isinstance(payload, Mapping):
