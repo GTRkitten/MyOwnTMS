@@ -351,18 +351,22 @@ concurrent remote edit требует explicit choice. GitLab-bound bug нель
 
 **Dependencies:** `TASK-GL-003`, `TASK-GL-004`, `TASK-GL-005`.
 
-**Status:** Implemented locally. Текущий GUI suite NOT RUN из-за отсутствующей
-`libEGL.so.1`; manual responsiveness, real GitLab/TLS/LAN и Windows EXE — NOT RUN.
+**Status:** Implemented locally. Текущий GUI suite NOT RUN: в доступном
+interpreter отсутствуют `pytest` и `PySide6`; исторический Qt run также был
+заблокирован отсутствующей `libEGL.so.1`. Manual responsiveness, real
+GitLab/TLS/LAN и Windows EXE — NOT RUN.
 
 **Outcome:** Вся интеграция доступна через понятный GUI без блокировки event loop.
 
 **DoD:**
 1. Настройки GitLab: origin, CA, token-for-session, projects, connection test,
    label bootstrap.
-2. Bug dialog: `Черновик`, project, source channel, external reference и sync
-   state.
-3. Действия: Save locally, Preview/Publish, Sync, Open in GitLab.
-4. Main table показывает project и sync state.
+2. Bug dialog: `Черновик`, project, source channel, external reference, sync
+   state, Save locally и Preview/Publish.
+3. Main toolbar на вкладке багов предоставляет одиночные Sync и Open in GitLab;
+   массовый Sync отложен до v1.2.
+4. Main table показывает project и sync state; Edit доступен ровно для одного
+   выбранного артефакта.
 5. Conflict dialog отображает base/local/remote и требует выбор.
 6. Network calls выполняются через `QThreadPool`; buttons/progress/error states
    исключают двойной запуск.
@@ -394,6 +398,12 @@ guard и ручной responsiveness smoke. Реальный LAN остаётс�
 недоступен; conflict dialog отображает pending removal вложения. Определено 10
 focused GUI tests, но текущий запуск — **NOT RUN**: импорт Qt требует
 отсутствующую `libEGL.so.1`.
+
+**UX correction evidence 2026-11-27:** Sync и Open in GitLab перенесены из bug
+dialog в main toolbar и показываются только на вкладке багов. Edit, Sync и Open
+in GitLab требуют ровно одну выбранную строку; Preview/Publish остался в
+редакторе. Добавлен focused selection-state regression. `compileall` — **PASS**;
+pytest-qt — **NOT RUN** в текущем interpreter: отсутствуют `pytest` и `PySide6`.
 
 ## TASK-GL-007 — package и LAN acceptance
 

@@ -64,6 +64,41 @@ QPushButton[success="true"]:hover {
     background-color: #229954;
 }
 
+/* Редактирование */
+QPushButton[warning="true"] {
+    background-color: #F1C40F;
+    color: #2C3E50;
+}
+
+QPushButton[warning="true"]:hover {
+    background-color: #D4AC0D;
+}
+
+/* Явная синхронизация GitLab */
+QPushButton[sync="true"] {
+    background-color: #3498DB;
+}
+
+QPushButton[sync="true"]:hover {
+    background-color: #2980B9;
+}
+
+/* Открытие Issue в GitLab */
+QPushButton[gitlabOpen="true"] {
+    background-color: #E67E22;
+}
+
+QPushButton[gitlabOpen="true"]:hover {
+    background-color: #CA6F1E;
+}
+
+QPushButton[warning="true"]:disabled,
+QPushButton[sync="true"]:disabled,
+QPushButton[gitlabOpen="true"]:disabled {
+    background-color: #BDC3C7;
+    color: #7F8C8D;
+}
+
 /* Поля ввода */
 QLineEdit, QTextEdit, QPlainTextEdit, QComboBox {
     background-color: #FFFFFF;

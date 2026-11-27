@@ -2,8 +2,7 @@
 Диалог создания и редактирования баг-репорта
 """
 from pathlib import Path
-from PySide6.QtCore import Qt, QUrl, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QTextEdit, QComboBox, QPushButton,
@@ -14,16 +13,13 @@ from PySide6.QtWidgets import (
 from src.database.models import GitLabProject
 from src.gui.gitlab_controller import GitLabSessionController
 from src.gui.widgets.gitlab_sync_dialogs import (
-    ConflictResolutionDialog,
     PublishPreviewDialog,
-    SyncPreviewDialog,
 )
 from src.services.artifact_service import BugReportService, TestCaseService
 from src.services.link_service import LinkService
 from src.services.attachment_service import AttachmentService
 from src.config import ALLOWED_FILE_TYPES
 from src.services.gitlab_publish_service import GitLabPublishService
-from src.services.gitlab_sync_service import GitLabSyncService
 
 
 class BugReportDialog(QDialog):
@@ -46,7 +42,6 @@ class BugReportDialog(QDialog):
         self.gitlab_controller = gitlab_controller
         self._network_busy = False
         self._pending_publish_preview = None
-        self._pending_sync_preview = None
         
         self.init_ui()
         
@@ -243,16 +238,6 @@ class BugReportDialog(QDialog):
         self.publish_btn.setEnabled(self.gitlab_controller is not None)
         button_layout.addWidget(self.publish_btn)
 
-        self.sync_btn = QPushButton("Синхронизировать")
-        self.sync_btn.clicked.connect(self.preview_sync)
-        self.sync_btn.setEnabled(False)
-        button_layout.addWidget(self.sync_btn)
-
-        self.open_gitlab_btn = QPushButton("Открыть в GitLab")
-        self.open_gitlab_btn.clicked.connect(self.open_in_gitlab)
-        self.open_gitlab_btn.setEnabled(False)
-        button_layout.addWidget(self.open_gitlab_btn)
-
         self.network_progress = QProgressBar()
         self.network_progress.setRange(0, 0)
         self.network_progress.setVisible(False)
@@ -292,10 +277,6 @@ class BugReportDialog(QDialog):
             draft_index = self.status_combo.findText("Черновик")
             if draft_index >= 0:
                 self.status_combo.model().item(draft_index).setEnabled(False)
-            self.sync_btn.setEnabled(
-                self.gitlab_controller is not None and binding.issue_iid is not None
-            )
-            self.open_gitlab_btn.setEnabled(bool(binding.issue_web_url))
         
         # Загружаем связанные тест-кейсы
         self.load_links()
@@ -360,28 +341,19 @@ class BugReportDialog(QDialog):
             self.save_attachments()
             self.load_attachments()
             self.session.expire_all()
-            self._refresh_sync_controls()
+            self._refresh_gitlab_state()
             return True
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {str(e)}")
             return False
 
-    def _refresh_sync_controls(self) -> None:
+    def _refresh_gitlab_state(self) -> None:
         if not self.artifact_id:
             return
         artifact = BugReportService.get_by_id(self.session, self.artifact_id)
         binding = artifact.gitlab_binding if artifact is not None else None
         state = binding.sync_state if binding is not None else "local_only"
         self.sync_state_label.setText(state)
-        self.sync_btn.setEnabled(
-            not self._network_busy
-            and self.gitlab_controller is not None
-            and binding is not None
-            and binding.issue_iid is not None
-        )
-        self.open_gitlab_btn.setEnabled(
-            not self._network_busy and binding is not None and bool(binding.issue_web_url)
-        )
         if binding is not None:
             self.project_combo.setEnabled(False)
             draft_index = self.status_combo.findText("Черновик")
@@ -394,7 +366,7 @@ class BugReportDialog(QDialog):
         self.save_btn.setEnabled(not busy)
         self.publish_btn.setEnabled(not busy and self.gitlab_controller is not None)
         self.status_combo.setEnabled(not busy)
-        self._refresh_sync_controls()
+        self._refresh_gitlab_state()
 
     def _start_network(self, operation, succeeded) -> None:
         if self._network_busy or self.gitlab_controller is None:
@@ -439,78 +411,20 @@ class BugReportDialog(QDialog):
     @Slot(object)
     def _publish_finished(self, result) -> None:
         self.session.expire_all()
-        self._refresh_sync_controls()
+        self._refresh_gitlab_state()
         QMessageBox.information(
             self, "GitLab", f"Issue !{result.issue_iid} опубликован"
         )
 
-    def preview_sync(self) -> None:
-        if not self._save_local():
-            return
-        bug_report_id = self.artifact_id
-        self._start_network(
-            lambda session, client: GitLabSyncService(client).preview(
-                session, bug_report_id
-            ),
-            self._sync_preview_ready,
-        )
-
-    @Slot(object)
-    def _sync_preview_ready(self, preview) -> None:
-        self._pending_sync_preview = preview
-        if preview.action == "none":
-            self.session.expire_all()
-            self._refresh_sync_controls()
-            QMessageBox.information(self, "GitLab", "Локальная и remote версии совпадают")
-            return
-        resolutions = None
-        if preview.conflicts:
-            dialog = ConflictResolutionDialog(preview, self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            resolutions = dialog.resolutions
-        else:
-            dialog = SyncPreviewDialog(preview, self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-        self._start_network(
-            lambda session, client: GitLabSyncService(client).confirm(
-                session, preview, resolutions
-            ),
-            self._sync_finished,
-        )
-
-    @Slot(object)
-    def _sync_finished(self, result) -> None:
-        self.session.expire_all()
-        self.load_artifact()
-        self._refresh_sync_controls()
-        QMessageBox.information(self, "GitLab", "Синхронизация завершена")
-
     @Slot(object)
     def _network_failed(self, error) -> None:
         self.session.expire_all()
-        self._refresh_sync_controls()
+        self._refresh_gitlab_state()
         QMessageBox.critical(self, "GitLab", str(error))
 
     @Slot()
     def _network_finished(self) -> None:
         self._set_network_busy(False)
-
-    def open_in_gitlab(self) -> None:
-        if not self.artifact_id:
-            return
-        artifact = BugReportService.get_by_id(self.session, self.artifact_id)
-        url_value = (
-            artifact.gitlab_binding.issue_web_url
-            if artifact is not None and artifact.gitlab_binding is not None
-            else None
-        )
-        url = QUrl(url_value or "")
-        if not url.isValid() or url.scheme().lower() != "https" or not url.host():
-            QMessageBox.warning(self, "GitLab", "Безопасный URL Issue недоступен")
-            return
-        QDesktopServices.openUrl(url)
 
     def reject(self) -> None:
         if self._network_busy:

@@ -183,15 +183,20 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 - Добавлены runtime-only настройки origin/internal CA/PAT, проверка соединения,
   управление validated project profiles и preview/confirm bootstrap labels.
 - Bug dialog поддерживает неполный `Черновик`, project/source/reference/sync
-  state, локальное сохранение, preview/publish, sync и безопасное открытие Issue.
-- Main table показывает project/sync state; conflict dialog отображает
-  base/local/remote, включая удаление вложения, и требует выбор для каждого
-  конфликтующего поля. После первой публикации `Черновик` сразу недоступен.
+  state, локальное сохранение и preview/publish. Sync и безопасное открытие
+  Issue находятся на main toolbar и доступны только на вкладке баг-репортов для
+  одной выбранной опубликованной строки; массовый Sync отложен до v1.2.
+- Main table показывает project/sync state; Edit доступен ровно для одного
+  выбранного артефакта. Conflict dialog отображает base/local/remote, включая
+  удаление вложения, и требует выбор для каждого конфликтующего поля. После
+  первой публикации `Черновик` сразу недоступен.
 - GitLab-операции выполняются через `QThreadPool` с отдельными DB sessions;
   progress/buttons исключают повторный запуск, а Qt auto-disconnect не доставляет
   результат уничтоженному widget.
-- В GUI suite определено 10 focused tests, включая post-publish Draft guard, но
-  текущий запуск — **NOT RUN**: импорт Qt требует отсутствующую `libEGL.so.1`.
+- В GUI suite добавлен focused selection-state regression. `compileall` после
+  UX correction 2026-11-27 — **PASS**; текущий pytest-qt запуск — **NOT RUN**:
+  в доступном interpreter отсутствуют `pytest` и `PySide6`. Исторический запуск
+  также блокировался отсутствующей `libEGL.so.1`.
   Manual responsiveness, real GitLab/TLS/LAN и Windows EXE — **NOT RUN**.
 
 ### TASK-GL-007
@@ -220,7 +225,7 @@ Runtime-данные лежат рядом с EXE в `data/`, а при запу
 | TASK-GL-003 | Implemented locally — service/API tests PASS; GUI/real GitLab NOT RUN |
 | TASK-GL-004 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
 | TASK-GL-005 | Implemented locally — focused tests PASS; real GitLab/GUI NOT RUN |
-| TASK-GL-006 | Implemented locally — current GUI suite blocked by `libEGL.so.1`; real GitLab/LAN NOT RUN |
+| TASK-GL-006 | Implemented locally — current GUI suite NOT RUN: `pytest`/`PySide6` unavailable; real GitLab/LAN NOT RUN |
 | TASK-GL-007 | Local packaging preflight PASS; Windows/LAN acceptance NOT RUN |
 
 ## Ключевые решения v1.1

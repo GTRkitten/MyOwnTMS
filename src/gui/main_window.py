@@ -9,11 +9,11 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QLineEdit, QComboBox, QMessageBox, QFileDialog,
     QToolBar, QMenu, QMenuBar, QSplitter, QGroupBox, QFormLayout,
-    QDateEdit, QCheckBox
+    QDateEdit, QCheckBox, QDialog, QProgressBar
 )
 from PySide6.QtCore import QDate
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtCore import Qt, QSize, QUrl, Slot
+from PySide6.QtGui import QIcon, QAction, QDesktopServices
 
 from src.config import APP_NAME, APP_VERSION, STYLE_PATH
 from src.database.session import get_session
@@ -31,6 +31,11 @@ from src.gui.widgets.artifact_detail_dialog import ArtifactDetailDialog
 from src.gui.widgets.export_dialog import ExportDialog
 from src.gui.gitlab_controller import GitLabSessionController
 from src.gui.widgets.gitlab_settings_dialog import GitLabSettingsDialog
+from src.gui.widgets.gitlab_sync_dialogs import (
+    ConflictResolutionDialog,
+    SyncPreviewDialog,
+)
+from src.services.gitlab_sync_service import GitLabSyncService
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +50,8 @@ class MainWindow(QMainWindow):
         self.selected_artifacts = []
         self.sort_column = None
         self.sort_order = Qt.AscendingOrder
+        self._gitlab_busy = False
+        self._pending_sync_preview = None
         
         self.init_ui()
         self.load_artifacts()
@@ -122,10 +129,11 @@ class MainWindow(QMainWindow):
         # Правка
         edit_menu = menubar.addMenu("Правка")
         
-        edit_action = QAction("Редактировать", self)
-        edit_action.setShortcut("Ctrl+R")
-        edit_action.triggered.connect(self.edit_artifact)
-        edit_menu.addAction(edit_action)
+        self.edit_action = QAction("Редактировать", self)
+        self.edit_action.setShortcut("Ctrl+R")
+        self.edit_action.setEnabled(False)
+        self.edit_action.triggered.connect(self.edit_artifact)
+        edit_menu.addAction(self.edit_action)
         
         deselect_action = QAction("Снять выделение", self)
         deselect_action.setShortcut("Escape")
@@ -171,6 +179,7 @@ class MainWindow(QMainWindow):
         
         # Редактирование
         self.edit_btn = QPushButton("Редактировать")
+        self.edit_btn.setProperty("warning", True)
         self.edit_btn.setEnabled(False)
         self.edit_btn.clicked.connect(self.edit_artifact)
         toolbar.addWidget(self.edit_btn)
@@ -188,6 +197,26 @@ class MainWindow(QMainWindow):
         export_btn.setProperty("success", True)
         export_btn.clicked.connect(self.export_artifacts)
         toolbar.addWidget(export_btn)
+
+        self.sync_btn = QPushButton("Синхронизировать")
+        self.sync_btn.setProperty("sync", True)
+        self.sync_btn.setEnabled(False)
+        self.sync_btn.setVisible(False)
+        self.sync_btn.clicked.connect(self.sync_selected_bug_report)
+        toolbar.addWidget(self.sync_btn)
+
+        self.open_gitlab_btn = QPushButton("Открыть в GitLab")
+        self.open_gitlab_btn.setProperty("gitlabOpen", True)
+        self.open_gitlab_btn.setEnabled(False)
+        self.open_gitlab_btn.setVisible(False)
+        self.open_gitlab_btn.clicked.connect(self.open_selected_bug_report_in_gitlab)
+        toolbar.addWidget(self.open_gitlab_btn)
+
+        self.gitlab_progress = QProgressBar()
+        self.gitlab_progress.setRange(0, 0)
+        self.gitlab_progress.setMaximumWidth(100)
+        self.gitlab_progress.setVisible(False)
+        toolbar.addWidget(self.gitlab_progress)
     
     def create_search_panel(self):
         """Создает панель поиска и фильтрации"""
@@ -414,6 +443,38 @@ class MainWindow(QMainWindow):
         QPushButton[success="true"]:hover {
             background-color: #229954;
         }
+
+        QPushButton[warning="true"] {
+            background-color: #F1C40F;
+            color: #2C3E50;
+        }
+
+        QPushButton[warning="true"]:hover {
+            background-color: #D4AC0D;
+        }
+
+        QPushButton[sync="true"] {
+            background-color: #3498DB;
+        }
+
+        QPushButton[sync="true"]:hover {
+            background-color: #2980B9;
+        }
+
+        QPushButton[gitlabOpen="true"] {
+            background-color: #E67E22;
+        }
+
+        QPushButton[gitlabOpen="true"]:hover {
+            background-color: #CA6F1E;
+        }
+
+        QPushButton[warning="true"]:disabled,
+        QPushButton[sync="true"]:disabled,
+        QPushButton[gitlabOpen="true"]:disabled {
+            background-color: #BDC3C7;
+            color: #7F8C8D;
+        }
         
         QPushButton[danger="true"] {
             background-color: #E74C3C;
@@ -558,9 +619,39 @@ class MainWindow(QMainWindow):
     
     def on_selection_changed(self):
         """Обрабатывает изменение выделения"""
-        has_selection = self.get_current_table().selectedItems()
-        self.edit_btn.setEnabled(bool(has_selection))
-        self.delete_btn.setEnabled(bool(has_selection))
+        self._update_action_states()
+
+    def _update_action_states(self):
+        """Обновляет действия с учетом вкладки, выбора и GitLab binding."""
+        selected_rows = self.get_current_table().selectionModel().selectedRows()
+        selection_count = len(selected_rows)
+        has_single_selection = selection_count == 1
+        is_bug_tab = self.current_tab == 'bug_reports'
+
+        can_edit = has_single_selection and not self._gitlab_busy
+        self.edit_btn.setEnabled(can_edit)
+        self.edit_action.setEnabled(can_edit)
+        self.delete_btn.setEnabled(selection_count > 0 and not self._gitlab_busy)
+
+        self.sync_btn.setVisible(is_bug_tab)
+        self.open_gitlab_btn.setVisible(is_bug_tab)
+        if not is_bug_tab or not has_single_selection or self._gitlab_busy:
+            self.sync_btn.setEnabled(False)
+            self.open_gitlab_btn.setEnabled(False)
+            return
+
+        row = selected_rows[0].row()
+        item = self.bug_reports_table.item(row, 0)
+        bug = BugReportService.get_by_id(self.session, item.text()) if item else None
+        binding = bug.gitlab_binding if bug is not None else None
+        self.sync_btn.setEnabled(
+            self.gitlab_controller is not None
+            and binding is not None
+            and binding.issue_iid is not None
+        )
+        self.open_gitlab_btn.setEnabled(
+            binding is not None and bool(binding.issue_web_url)
+        )
     
     def get_current_table(self):
         """Возвращает текущую таблицу"""
@@ -625,6 +716,7 @@ class MainWindow(QMainWindow):
             self.fill_bug_reports_table(artifacts)
         
         self.statusBar().showMessage(f"Загружено {len(artifacts)} артефактов")
+        self._update_action_states()
     
     def reset_filters(self):
         """Сбрасывает все фильтры"""
@@ -738,8 +830,13 @@ class MainWindow(QMainWindow):
         table = self.get_current_table()
         selected_rows = table.selectionModel().selectedRows()
         
-        if not selected_rows:
-            QMessageBox.warning(self, "Предупреждение", "Не выбран артефакт для редактирования")
+        if len(selected_rows) != 1:
+            message = (
+                "Выберите ровно один артефакт для редактирования"
+                if selected_rows
+                else "Не выбран артефакт для редактирования"
+            )
+            QMessageBox.warning(self, "Предупреждение", message)
             return
         
         # Берем первую выделенную строку
@@ -761,6 +858,124 @@ class MainWindow(QMainWindow):
         if dialog.exec() == 1:
             self.load_artifacts()
             self.statusBar().showMessage(f"Артефакт {artifact_id} обновлен")
+
+    def _selected_bug_report(self):
+        """Возвращает единственный выбранный баг или None."""
+        if self.current_tab != 'bug_reports':
+            return None
+        selected_rows = self.bug_reports_table.selectionModel().selectedRows()
+        if len(selected_rows) != 1:
+            return None
+        item = self.bug_reports_table.item(selected_rows[0].row(), 0)
+        return BugReportService.get_by_id(self.session, item.text()) if item else None
+
+    def _set_gitlab_busy(self, busy):
+        self._gitlab_busy = busy
+        self.gitlab_progress.setVisible(busy)
+        self._update_action_states()
+
+    def _start_gitlab_operation(self, operation, succeeded):
+        if self._gitlab_busy or self.gitlab_controller is None:
+            return
+        try:
+            self.gitlab_controller.require_ready()
+            self._set_gitlab_busy(True)
+            self.gitlab_controller.start(
+                operation,
+                succeeded=succeeded,
+                failed=self._gitlab_failed,
+                finished=self._gitlab_finished,
+            )
+        except Exception as error:
+            self._set_gitlab_busy(False)
+            self._gitlab_failed(error)
+
+    def sync_selected_bug_report(self):
+        """Показывает preview и синхронизирует один выбранный опубликованный баг."""
+        bug = self._selected_bug_report()
+        if bug is None:
+            QMessageBox.warning(
+                self,
+                "GitLab",
+                "Выберите ровно один опубликованный баг-репорт для синхронизации",
+            )
+            return
+        if bug.gitlab_binding is None or bug.gitlab_binding.issue_iid is None:
+            QMessageBox.warning(self, "GitLab", "Баг-репорт ещё не опубликован")
+            return
+
+        bug_report_id = bug.id
+        self._start_gitlab_operation(
+            lambda session, client: GitLabSyncService(client).preview(
+                session, bug_report_id
+            ),
+            self._sync_preview_ready,
+        )
+
+    @Slot(object)
+    def _sync_preview_ready(self, preview):
+        self._pending_sync_preview = preview
+        if preview.action == "none":
+            self.session.expire_all()
+            self.load_artifacts()
+            QMessageBox.information(self, "GitLab", "Локальная и remote версии совпадают")
+            return
+
+        resolutions = None
+        if preview.conflicts:
+            dialog = ConflictResolutionDialog(preview, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            resolutions = dialog.resolutions
+        else:
+            dialog = SyncPreviewDialog(preview, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+        self._start_gitlab_operation(
+            lambda session, client: GitLabSyncService(client).confirm(
+                session, preview, resolutions
+            ),
+            self._sync_finished,
+        )
+
+    @Slot(object)
+    def _sync_finished(self, result):
+        self.session.expire_all()
+        self.load_artifacts()
+        self.statusBar().showMessage("Синхронизация GitLab завершена")
+        QMessageBox.information(self, "GitLab", "Синхронизация завершена")
+
+    @Slot(object)
+    def _gitlab_failed(self, error):
+        self.session.expire_all()
+        self.load_artifacts()
+        QMessageBox.critical(self, "GitLab", str(error))
+
+    @Slot()
+    def _gitlab_finished(self):
+        self._set_gitlab_busy(False)
+
+    def open_selected_bug_report_in_gitlab(self):
+        """Открывает Issue только для одного выбранного опубликованного бага."""
+        bug = self._selected_bug_report()
+        if bug is None:
+            QMessageBox.warning(
+                self,
+                "GitLab",
+                "Выберите ровно один опубликованный баг-репорт",
+            )
+            return
+        url_value = (
+            bug.gitlab_binding.issue_web_url
+            if bug.gitlab_binding is not None
+            else None
+        )
+        url = QUrl(url_value or "")
+        if not url.isValid() or url.scheme().lower() != "https" or not url.host():
+            QMessageBox.warning(self, "GitLab", "Безопасный URL Issue недоступен")
+            return
+        QDesktopServices.openUrl(url)
     
     def view_artifact(self):
         """Просматривает выбранный артефакт"""
