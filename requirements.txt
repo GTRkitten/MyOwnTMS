@@ -6,6 +6,9 @@ PySide6>=6.6.0
 # База данных
 SQLAlchemy>=2.0.0
 
+# GitLab REST API
+httpx>=0.27.0,<0.29.0
+
 # Экспорт в PDF
 reportlab>=4.0.0
 

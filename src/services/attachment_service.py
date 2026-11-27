@@ -1,6 +1,7 @@
 """
 Сервис для работы с вложениями (файлами)
 """
+import json
 import shutil
 from pathlib import Path
 from typing import List, Optional
@@ -103,6 +104,43 @@ class AttachmentService:
         attachment = session.query(Attachment).filter(Attachment.id == attachment_id).first()
         if not attachment:
             return False
+
+        # Preserve an exact, durable removal intent before ON DELETE CASCADE
+        # removes the upload binding. Sync can then remove only this Markdown
+        # entry while retaining unrelated remote attachment edits.
+        for upload_binding in tuple(attachment.gitlab_bindings):
+            binding = upload_binding.gitlab_binding
+            markdown = upload_binding.remote_markdown
+            if (
+                binding is None
+                or not markdown
+                or upload_binding.uploaded_at is None
+                or not binding.base_snapshot
+            ):
+                continue
+            try:
+                snapshot = json.loads(binding.base_snapshot)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(snapshot, dict):
+                continue
+            attachments = snapshot.get("attachments")
+            if not isinstance(attachments, list):
+                continue
+            if markdown not in attachments:
+                continue
+            pending = snapshot.setdefault("pending_attachment_removals", [])
+            if not isinstance(pending, list):
+                continue
+            if markdown not in pending:
+                pending.append(markdown)
+            binding.base_snapshot = json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            binding.sync_state = "local_changed"
         
         # Удаляем файл (используем абсолютный путь)
         file_path = attachment.get_absolute_path()

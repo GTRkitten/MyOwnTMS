@@ -5,3 +5,10 @@ git-hygiene:
   stage: validate
   script:
     - python3 scripts/check_git_hygiene.py
+
+unit-tests:
+  stage: validate
+  script:
+    - python3 -m pip install -r requirements-dev.txt
+    # TASK-GL-001 has no Qt tests; GUI plugin activation starts in TASK-GL-006.
+    - python3 -m pytest -p no:pytest-qt

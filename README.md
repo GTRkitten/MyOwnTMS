@@ -57,9 +57,10 @@ python src/main.py
 
 ### Вариант 2: EXE файл (Windows)
 
-1. Упакуйте приложение в EXE:
-```bash
-python build_exe.py
+1. Выполните сборку из корня проекта в активированном виртуальном окружении:
+```powershell
+python -m pip install -r requirements.txt
+python -m PyInstaller --noconfirm --clean MyOwnTMS.spec
 ```
 
 2. Запустите `dist/MyOwnTMS.exe`
@@ -147,7 +148,7 @@ MyOwnTMS/
 │           └── export_dialog.py
 ├── data/                     # Директория для базы данных
 ├── requirements.txt          # Зависимости
-├── build_exe.py             # Скрипт упаковки в EXE
+├── MyOwnTMS.spec             # Конфигурация сборки PyInstaller
 └── README.md                # Этот файл
 ```
 

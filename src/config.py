@@ -16,7 +16,20 @@ def get_data_dir() -> Path:
     При запуске из EXE использует папку рядом с EXE,
     при запуске из Python использует папку data проекта.
     """
-    if getattr(sys, 'frozen', False):
+    test_data_dir = os.environ.get("MYOWNTMS_TEST_DATA_DIR")
+    if test_data_dir:
+        if (
+            os.environ.get("MYOWNTMS_TESTING") != "1"
+            or "PYTEST_VERSION" not in os.environ
+            or getattr(sys, "frozen", False)
+        ):
+            raise RuntimeError(
+                "MYOWNTMS_TEST_DATA_DIR is available only to pytest runs"
+            )
+        data_dir = Path(test_data_dir)
+        if not data_dir.is_absolute():
+            raise RuntimeError("MYOWNTMS_TEST_DATA_DIR must be an absolute path")
+    elif getattr(sys, 'frozen', False):
         # Запущено как EXE (PyInstaller)
         exe_dir = Path(sys.executable).parent
         data_dir = exe_dir / "data"
@@ -25,7 +38,7 @@ def get_data_dir() -> Path:
         base_dir = Path(__file__).resolve().parent.parent
         data_dir = base_dir / "data"
     
-    data_dir.mkdir(exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 
 
@@ -82,7 +95,7 @@ ALLOWED_FILE_TYPES = {
 TEST_CASE_STATUSES = ['Черновик', 'Готов', 'Пройден', 'Провален', 'Заблокирован']
 
 # Статусы баг-репортов
-BUG_REPORT_STATUSES = ['Новый', 'В работе', 'Проверен', 'Закрыт']
+BUG_REPORT_STATUSES = ['Черновик', 'Новый', 'В работе', 'Проверен', 'Закрыт']
 
 # Приоритеты
 PRIORITIES = ['Критический', 'Высокий', 'Средний', 'Низкий']

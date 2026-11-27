@@ -2,24 +2,36 @@
 Диалог создания и редактирования баг-репорта
 """
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLineEdit, QTextEdit, QComboBox, QPushButton,
     QLabel, QMessageBox, QListWidget, QFrame, QFileDialog,
-    QScrollArea, QWidget
+    QScrollArea, QWidget, QProgressBar
 )
 
+from src.database.models import GitLabProject
+from src.gui.gitlab_controller import GitLabSessionController
+from src.gui.widgets.gitlab_sync_dialogs import (
+    PublishPreviewDialog,
+)
 from src.services.artifact_service import BugReportService, TestCaseService
 from src.services.link_service import LinkService
 from src.services.attachment_service import AttachmentService
 from src.config import ALLOWED_FILE_TYPES
+from src.services.gitlab_publish_service import GitLabPublishService
 
 
 class BugReportDialog(QDialog):
     """Диалог создания и редактирования баг-репорта"""
     
-    def __init__(self, session, artifact_id=None, parent=None):
+    def __init__(
+        self,
+        session,
+        artifact_id=None,
+        parent=None,
+        gitlab_controller: GitLabSessionController | None = None,
+    ):
         super().__init__(parent)
         self.session = session
         self.artifact_id = artifact_id
@@ -27,6 +39,9 @@ class BugReportDialog(QDialog):
         self.linked_test_cases = []
         self.attachments = []  # Список прикрепленных файлов
         self.original_attachments = []  # Оригинальный список вложений из БД
+        self.gitlab_controller = gitlab_controller
+        self._network_busy = False
+        self._pending_publish_preview = None
         
         self.init_ui()
         
@@ -76,10 +91,40 @@ class BugReportDialog(QDialog):
         form_layout.addRow("Серьезность:", self.severity_combo)
         
         self.status_combo = QComboBox()
-        self.status_combo.addItems(["Новый", "В работе", "Проверен", "Закрыт"])
-        self.status_combo.setCurrentText("Новый")
+        self.status_combo.addItems(["Черновик", "Новый", "В работе", "Проверен", "Закрыт"])
+        self.status_combo.setCurrentText("Черновик")
         self.status_combo.setMinimumHeight(50)
         form_layout.addRow("Статус:", self.status_combo)
+
+        self.project_combo = QComboBox()
+        self.project_combo.addItem("Локально, без GitLab project", None)
+        for project in (
+            self.session.query(GitLabProject)
+            .filter(GitLabProject.is_active.is_(True))
+            .order_by(GitLabProject.display_name)
+            .all()
+        ):
+            self.project_combo.addItem(
+                f"{project.display_name} ({project.path_with_namespace})", project.id
+            )
+        form_layout.addRow("GitLab project:", self.project_combo)
+
+        self.source_channel_combo = QComboBox()
+        self.source_channel_combo.addItem("Не указан", None)
+        self.source_channel_combo.addItem("Email", "email")
+        self.source_channel_combo.addItem("Мессенджер", "messenger")
+        self.source_channel_combo.addItem("Телефон", "phone")
+        self.source_channel_combo.addItem("Встреча", "meeting")
+        self.source_channel_combo.addItem("Другое", "other")
+        form_layout.addRow("Канал источника:", self.source_channel_combo)
+
+        self.external_reference_input = QLineEdit()
+        self.external_reference_input.setMaxLength(500)
+        self.external_reference_input.setPlaceholderText("Номер обращения или внешняя ссылка")
+        form_layout.addRow("Внешний номер:", self.external_reference_input)
+
+        self.sync_state_label = QLabel("local_only")
+        form_layout.addRow("Состояние sync:", self.sync_state_label)
         
         container_layout.addLayout(form_layout)
         
@@ -183,10 +228,20 @@ class BugReportDialog(QDialog):
         # Кнопки (вне скролл-области)
         button_layout = QHBoxLayout()
         
-        save_btn = QPushButton("Сохранить")
-        save_btn.setProperty("success", True)
-        save_btn.clicked.connect(self.save_artifact)
-        button_layout.addWidget(save_btn)
+        self.save_btn = QPushButton("Сохранить локально")
+        self.save_btn.setProperty("success", True)
+        self.save_btn.clicked.connect(self.save_artifact)
+        button_layout.addWidget(self.save_btn)
+
+        self.publish_btn = QPushButton("Preview и опубликовать")
+        self.publish_btn.clicked.connect(self.preview_publish)
+        self.publish_btn.setEnabled(self.gitlab_controller is not None)
+        button_layout.addWidget(self.publish_btn)
+
+        self.network_progress = QProgressBar()
+        self.network_progress.setRange(0, 0)
+        self.network_progress.setVisible(False)
+        button_layout.addWidget(self.network_progress)
         
         cancel_btn = QPushButton("Отмена")
         cancel_btn.clicked.connect(self.reject)
@@ -210,6 +265,18 @@ class BugReportDialog(QDialog):
         self.expected_result_input.setText(artifact.expected_result)
         self.actual_result_input.setText(artifact.actual_result)
         self.environment_input.setText(artifact.environment or "")
+        project_index = self.project_combo.findData(artifact.gitlab_project_id)
+        self.project_combo.setCurrentIndex(max(project_index, 0))
+        source_index = self.source_channel_combo.findData(artifact.source_channel)
+        self.source_channel_combo.setCurrentIndex(max(source_index, 0))
+        self.external_reference_input.setText(artifact.external_reference or "")
+        binding = artifact.gitlab_binding
+        if binding is not None:
+            self.sync_state_label.setText(binding.sync_state)
+            self.project_combo.setEnabled(False)
+            draft_index = self.status_combo.findText("Черновик")
+            if draft_index >= 0:
+                self.status_combo.model().item(draft_index).setEnabled(False)
         
         # Загружаем связанные тест-кейсы
         self.load_links()
@@ -219,22 +286,28 @@ class BugReportDialog(QDialog):
     
     def save_artifact(self):
         """Сохраняет баг-репорт"""
+        if self._save_local():
+            self.accept()
+
+    def _save_local(self) -> bool:
+        """Persist the current form without performing any network action."""
         # Валидация
         if not self.title_input.text().strip():
             QMessageBox.warning(self, "Ошибка", "Введите заголовок баг-репорта")
-            return
+            return False
         
-        if not self.reproduction_steps_input.toPlainText().strip():
+        is_draft = self.status_combo.currentText() == "Черновик"
+        if not is_draft and not self.reproduction_steps_input.toPlainText().strip():
             QMessageBox.warning(self, "Ошибка", "Введите шаги воспроизведения")
-            return
+            return False
         
-        if not self.expected_result_input.toPlainText().strip():
+        if not is_draft and not self.expected_result_input.toPlainText().strip():
             QMessageBox.warning(self, "Ошибка", "Введите ожидаемый результат")
-            return
+            return False
         
-        if not self.actual_result_input.toPlainText().strip():
+        if not is_draft and not self.actual_result_input.toPlainText().strip():
             QMessageBox.warning(self, "Ошибка", "Введите фактический результат")
-            return
+            return False
         
         # Данные для сохранения
         data = {
@@ -246,7 +319,10 @@ class BugReportDialog(QDialog):
             'environment': self.environment_input.toPlainText().strip(),
             'priority': self.priority_combo.currentText(),
             'severity': self.severity_combo.currentText(),
-            'status': self.status_combo.currentText()
+            'status': self.status_combo.currentText(),
+            'gitlab_project_id': self.project_combo.currentData(),
+            'source_channel': self.source_channel_combo.currentData(),
+            'external_reference': self.external_reference_input.text().strip() or None,
         }
         
         try:
@@ -263,10 +339,98 @@ class BugReportDialog(QDialog):
             
             # Сохраняем вложения
             self.save_attachments()
-            
-            self.accept()
+            self.load_attachments()
+            self.session.expire_all()
+            self._refresh_gitlab_state()
+            return True
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Ошибка сохранения: {str(e)}")
+            return False
+
+    def _refresh_gitlab_state(self) -> None:
+        if not self.artifact_id:
+            return
+        artifact = BugReportService.get_by_id(self.session, self.artifact_id)
+        binding = artifact.gitlab_binding if artifact is not None else None
+        state = binding.sync_state if binding is not None else "local_only"
+        self.sync_state_label.setText(state)
+        if binding is not None:
+            self.project_combo.setEnabled(False)
+            draft_index = self.status_combo.findText("Черновик")
+            if draft_index >= 0:
+                self.status_combo.model().item(draft_index).setEnabled(False)
+
+    def _set_network_busy(self, busy: bool) -> None:
+        self._network_busy = busy
+        self.network_progress.setVisible(busy)
+        self.save_btn.setEnabled(not busy)
+        self.publish_btn.setEnabled(not busy and self.gitlab_controller is not None)
+        self.status_combo.setEnabled(not busy)
+        self._refresh_gitlab_state()
+
+    def _start_network(self, operation, succeeded) -> None:
+        if self._network_busy or self.gitlab_controller is None:
+            return
+        try:
+            self.gitlab_controller.require_ready()
+            self._set_network_busy(True)
+            self.gitlab_controller.start(
+                operation,
+                succeeded=succeeded,
+                failed=self._network_failed,
+                finished=self._network_finished,
+            )
+        except Exception as error:
+            self._set_network_busy(False)
+            self._network_failed(error)
+
+    def preview_publish(self) -> None:
+        if not self._save_local():
+            return
+        bug_report_id = self.artifact_id
+        self._start_network(
+            lambda session, client: GitLabPublishService(client).preview(
+                session, bug_report_id
+            ),
+            self._publish_preview_ready,
+        )
+
+    @Slot(object)
+    def _publish_preview_ready(self, preview) -> None:
+        self._pending_publish_preview = preview
+        dialog = PublishPreviewDialog(preview, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._start_network(
+            lambda session, client: GitLabPublishService(client).publish(
+                session, preview.bug_report_id, preview
+            ),
+            self._publish_finished,
+        )
+
+    @Slot(object)
+    def _publish_finished(self, result) -> None:
+        self.session.expire_all()
+        self._refresh_gitlab_state()
+        QMessageBox.information(
+            self, "GitLab", f"Issue !{result.issue_iid} опубликован"
+        )
+
+    @Slot(object)
+    def _network_failed(self, error) -> None:
+        self.session.expire_all()
+        self._refresh_gitlab_state()
+        QMessageBox.critical(self, "GitLab", str(error))
+
+    @Slot()
+    def _network_finished(self) -> None:
+        self._set_network_busy(False)
+
+    def reject(self) -> None:
+        if self._network_busy:
+            QMessageBox.information(self, "GitLab", "Дождитесь завершения операции")
+            return
+        super().reject()
     
     def load_links(self):
         """Загружает связанные тест-кейсы"""

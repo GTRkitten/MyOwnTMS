@@ -1,9 +1,12 @@
 # SRS: MyOwnTMS v1.1 — локальная TMS с GitLab Issues
 
 **Статус документа:** baseline v1.0 подтверждён чтением исходного кода;
-возможности v1.1 запланированы, но ещё не реализованы и не протестированы.
+test foundation, SQLite migrations, GitLab API boundary, project bootstrap,
+resumable publish, explicit sync и PySide6 UX из `TASK-GL-001`–006 реализованы
+локально; local packaging preflight из `TASK-GL-007` выполнен, Windows/LAN
+acceptance остаётся `NOT RUN`.
 
-**Дата актуализации:** 2026-11-25
+**Дата актуализации:** 2026-11-27
 
 ## Goal
 
@@ -55,9 +58,9 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 - PySide6 GUI, SQLAlchemy и SQLite.
 - Упаковка Windows EXE через PyInstaller.
 
-Этот перечень подтверждён чтением исходного кода. В текущем репозитории нет
-автоматизированного тестового контура, поэтому runtime/EXE acceptance не
-считается выполненным.
+Этот перечень подтверждён чтением исходного кода. Добавленный test suite
+проверяет migrations и GitLab HTTP boundary, но полный runtime/GUI/EXE baseline
+ещё не покрыт и acceptance не считается выполненным.
 
 ### In-Scope v1.1
 
@@ -82,6 +85,8 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 - GitLab.com и любые внешние SaaS-хранилища.
 - Развёртывание и администрирование GitLab Self-Managed.
 - Фоновая или периодическая синхронизация.
+- Массовая синхронизация нескольких выбранных баг-репортов; она отложена до
+  v1.2 и не должна неявно запускаться при множественном выборе в v1.1.
 - Webhooks и входящие соединения к MyOwnTMS.
 - Импорт Issue, изначально созданных в GitLab.
 - Синхронизация тест-кейсов и связей между артефактами.
@@ -145,6 +150,10 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
    - `myowntms-severity-{critical|major|minor|trivial}`.
 7. Приложение обеспечивает ровно один label каждой управляемой группы и
    сохраняет все неуправляемые labels.
+8. Непосредственно перед publish приложение повторно читает проект и полный
+   набор managed labels. Если хотя бы один label исчез, Issue write блокируется,
+   локальный `labels_ready_at` сбрасывается, а оператор должен снова выполнить
+   preview и подтверждённый bootstrap. Publish не создаёт labels неявно.
 
 ### FR-5: Preview и публикация
 
@@ -183,9 +192,14 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 4. После upload сохраняются remote upload ID/URL, Markdown, SHA-256 локального
    содержимого и время загрузки.
 5. Повторная синхронизация не загружает файл с тем же attachment ID и SHA-256.
+   Если результат upload неопределён и response metadata не получены,
+   автоматический повтор POST блокируется во избежание remote-дубликата.
 6. GitLab Markdown размещается только в секции `Вложения` managed block.
 7. Удаление локального вложения убирает ссылку из managed block, но не удаляет
-   GitLab upload автоматически.
+   GitLab upload автоматически. До удаления upload binding точный Markdown
+   фиксируется как pending removal; Sync показывает его в `base/local/remote`
+   preview, требует explicit resolution при concurrent remote edit и очищает
+   intent только после подтверждённого результата.
 8. Файлы, добавленные вручную в GitLab, автоматически локально не скачиваются.
 
 ### FR-7: Явная синхронизация
@@ -204,6 +218,8 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
    actual result, environment, source metadata, status, priority и severity.
 8. Текст GitLab description вне managed block сохраняется без изменений.
 9. Отсутствующий или повреждённый managed block запрещает автоматическую запись.
+10. В v1.1 команда синхронизации применяется ровно к одному выбранному
+    опубликованному баг-репорту. Массовая синхронизация планируется для v1.2.
 
 ### FR-8: Статусы и жизненный цикл
 
@@ -220,17 +236,29 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 3. Опубликованный баг нельзя hard-delete из главного окна.
 4. Удалённый или недоступный Issue получает состояние `remote_missing`; новый
    Issue автоматически не создаётся.
+5. После появления GitLab binding баг нельзя вернуть в `Черновик`; ограничение
+   действует и в GUI, и на service boundary.
 
 ### FR-9: GUI и состояния
 
 1. Настройки GitLab включают origin, CA bundle, token-for-session, список
    профилей, проверку соединения и подготовку labels.
-2. Bug dialog включает проект, источник, внешний номер и sync status.
-3. Доступны действия `Сохранить локально`, `Preview и опубликовать`,
-   `Синхронизировать`, `Открыть в GitLab`.
-4. Main window показывает проект и sync status опубликованного бага.
-5. Сетевые операции выполняются вне GUI thread; окно остаётся отзывчивым.
-6. Ошибка показывает безопасное описание, HTTP status и request ID при наличии,
+2. Bug dialog включает проект, источник, внешний номер и sync status; в нём
+   доступны `Сохранить локально` и `Preview и опубликовать`.
+3. `Preview и опубликовать` остаётся в редакторе, поскольку перед публикацией
+   должны быть сохранены и проверены все редактируемые поля документа.
+4. Main window показывает project и sync status опубликованного бага. Справа от
+   `Экспорт` на вкладке баг-репортов находятся синяя кнопка
+   `Синхронизировать` и оранжевая `Открыть в GitLab`.
+5. `Редактировать` отображается жёлтой. Действие доступно только при выборе
+   ровно одного тест-кейса или баг-репорта; ограничение действует также для
+   пункта меню и сочетания клавиш.
+6. `Синхронизировать` и `Открыть в GitLab` доступны только на вкладке
+   баг-репортов, только для одного выбранного опубликованного бага и недоступны
+   при множественном выборе. `Открыть в GitLab` дополнительно требует безопасный
+   сохранённый Issue URL.
+7. Сетевые операции выполняются вне GUI thread; окно остаётся отзывчивым.
+8. Ошибка показывает безопасное описание, HTTP status и request ID при наличии,
    но не token, request body, description или имена локальных каталогов.
 
 ## Non-Functional Requirements
@@ -282,7 +310,12 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 
 ## Data and Interfaces
 
-### Planned local entities
+### Local entities for v1.1
+
+Таблицы и ORM-модели созданы в `TASK-GL-001`; validated project-profile и
+label-bootstrap service добавлен в `TASK-GL-003`; managed block codec и
+resumable publish service добавлены в `TASK-GL-004`; pure three-way merge и
+explicit sync service добавлены в `TASK-GL-005`.
 
 - `GitLabProject`: display/customer name, GitLab project ID/path/web URL,
   visibility, active flag, labels readiness timestamps.
@@ -307,8 +340,14 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
   <https://docs.gitlab.com/api/project_markdown_uploads/>
 - Labels:
   <https://docs.gitlab.com/api/labels/>
+- Projects:
+  <https://docs.gitlab.com/api/projects/>
 - Offline Self-Managed guidance:
   <https://docs.gitlab.com/topics/offline/quick_start_guide/>
+- HTTPX SSL, timeouts и mock transports:
+  <https://www.python-httpx.org/advanced/ssl/>,
+  <https://www.python-httpx.org/advanced/timeouts/>,
+  <https://www.python-httpx.org/advanced/transports/>.
 
 ## Edge Cases and Failure Modes
 
@@ -336,14 +375,14 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 | Task | Outcome | Status |
 |---|---|---|
 | TASK-DOC-001 | SRS, CONTEXT и implementation brief | Implemented locally |
-| TASK-SEC-001 | Runtime/user data больше не отслеживаются Git | Ready for clean initial commit; remote NOT CONFIGURED |
-| TASK-GL-001 | Test foundation и безопасные SQLite migrations | Planned |
-| TASK-GL-002 | GitLab API client, TLS и session-only token | Planned |
-| TASK-GL-003 | Project profiles и label bootstrap | Planned |
-| TASK-GL-004 | Resumable publish и image uploads | Planned |
-| TASK-GL-005 | Pull/push и field-level conflicts | Planned |
-| TASK-GL-006 | PySide6 UX интеграции | Planned |
-| TASK-GL-007 | Windows package и LAN acceptance | Planned |
+| TASK-SEC-001 | Runtime/user data больше не отслеживаются Git | Local hygiene PASS; commit и remote уже существуют, push status не проверялся |
+| TASK-GL-001 | Test foundation и безопасные SQLite migrations | Implemented locally; focused tests PASS |
+| TASK-GL-002 | GitLab API client, TLS и session-only token | Implemented locally; MockTransport tests PASS |
+| TASK-GL-003 | Project profiles и label bootstrap | Implemented locally; service/API tests PASS |
+| TASK-GL-004 | Resumable publish и image uploads | Implemented locally; focused tests PASS |
+| TASK-GL-005 | Pull/push и field-level conflicts | Implemented locally; focused tests PASS |
+| TASK-GL-006 | PySide6 UX интеграции | Implemented locally; текущий GUI suite NOT RUN — `pytest`/`PySide6` отсутствуют |
+| TASK-GL-007 | Windows package и LAN acceptance | Local packaging preflight PASS; Windows/LAN NOT RUN |
 
 ## Testing and Acceptance Criteria
 
@@ -371,10 +410,28 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 9. EXE на чистой Windows-машине доверяет внутреннему CA.
 10. Network capture показывает соединения только с настроенным GitLab origin.
 
-Текущий статус: clean import подготовлен без старой `.git`; локальные
-`TASK-SEC-001` denylist и redacted worktree/history secret scan выполнены
-успешно. Commit, remote и push: **NOT RUN**. Все GitLab, LAN, EXE и остальные
-v1.1 автоматические проверки: **NOT RUN**.
+Текущий локальный evidence 2026-11-26 относится к commit
+`8a88b6b1400f5d1c30558f7ffe060e2ef4144336` плюс незакоммиченным изменениям
+защиты labels, lifecycle вложений и published-Draft guard. Ветка — `dev`,
+`origin` настроен на GitHub; факт push текущего snapshot не проверялся.
+Runtime/user paths в index отсутствуют; denylist, redacted worktree/history
+secret scan, `compileall` и `git diff --check` — **PASS**.
+
+Неграфический изолированный suite — **102 passed**: migrations/models/test-env —
+**6**, project profiles/bootstrap — **14**, client/codec/publish — **55**,
+sync/lifecycle — **27**. Добавлены regressions для label drift перед publish,
+durable attachment removal с attachment conflict resolution и запрета возврата
+опубликованного бага в `Черновик`. В GUI-файле определено 11 focused tests,
+включая post-publish Draft guard и selection-state regression, но текущий GUI
+suite — **NOT RUN**: в доступном interpreter отсутствуют `pytest` и `PySide6`.
+Исторический запуск Qt также останавливался без системной `libEGL.so.1`.
+
+Исторический Linux packaging preflight из `TASK-GL-007` остаётся PASS для
+зафиксированного в acceptance report snapshot, но bundle после последних
+незакоммиченных source-изменений не пересобирался. Реальная legacy/runtime DB,
+GitLab CI, manual responsiveness, clean Windows, реальный GitLab/TLS/role, LAN,
+migration/rollback drill и Windows EXE acceptance — **NOT RUN**. Подробности:
+[`GITLAB_V1_1_ACCEPTANCE.md`](GITLAB_V1_1_ACCEPTANCE.md).
 
 ## Known Issues and Risks
 
@@ -382,15 +439,24 @@ v1.1 автоматические проверки: **NOT RUN**.
 
 Clean import не содержит `dist/data/tms.db`, пользовательские изображения,
 build/dist outputs, Python bytecode, raw `context/` или исходную Git history;
-denylist не допускает их повторное отслеживание. Remote ещё не настроен. Старые
-blobs могут сохраняться во внешних clones/caches после предыдущей публикации;
-их удаление и возможная privacy/credential remediation требуют отдельного
-решения и не входят в clean import.
+denylist не допускает их повторное отслеживание. Сейчас commit и GitHub remote
+уже существуют, но содержимое внешнего remote и факт push текущего snapshot в
+этой локальной проверке не исследовались. Старые blobs могут сохраняться во
+внешних clones/caches после предыдущей публикации; их удаление и возможная
+privacy/credential remediation требуют отдельного решения.
 
-### KR-2: No current automated tests
+### KR-2: Automated coverage is limited to TASK-GL-001–006
 
-В репозитории нет тестового набора или dev requirements. До `TASK-GL-001`
-нельзя считать миграции, GUI и текущий baseline автоматически защищёнными.
+Добавлены focused tests для backup/migration/idempotence/rollback, ORM schema и
+GitLab HTTP boundary через `MockTransport`, validated project profiles,
+idempotent label bootstrap, managed block/labels, uncertain create recovery,
+resumable uploads, pre-publish label drift, durable attachment removal и
+attachment conflict, pure three-way merge, explicit pull/push, conflicts,
+Close/Reopen, published-Draft/delete guards, remote deletion и post-PUT control
+read. PySide6 regressions присутствуют в source, но на текущем host не запущены.
+Manual GUI responsiveness, реальный GitLab/TLS и Windows EXE ещё не покрыты. Local Linux
+packaging preflight выполнен, но environment acceptance остаётся открытой частью
+`TASK-GL-007`.
 
 ### KR-3: GitLab is not deployed yet
 
@@ -443,6 +509,12 @@ backup и integrity check. Alembic пока не добавляется.
 
 HTTP boundary реализуется отдельным adapter, а вызовы выполняются через
 `QThreadPool`; mapping и merge logic остаются pure Python.
+
+### DR-10: Массовая синхронизация отложена до v1.2
+
+В v1.1 Sync обрабатывает ровно один выбранный опубликованный баг. Batch preview,
+поэлементные конфликты и частичные результаты массовой синхронизации требуют
+отдельного UX и реализуются не ранее v1.2.
 
 ## Interview Log
 
