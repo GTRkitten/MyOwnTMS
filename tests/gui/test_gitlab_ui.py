@@ -6,12 +6,12 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QObject, Qt, Slot
+from PySide6.QtCore import QItemSelectionModel, QObject, Qt, Slot
 from PySide6.QtWidgets import QDialog, QMessageBox
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.database.models import Base, BugReport, GitLabBinding, GitLabProject
+from src.database.models import Base, BugReport, GitLabBinding, GitLabProject, TestCase
 from src.gui.gitlab_controller import GitLabSessionController
 from src.gui.main_window import MainWindow
 from src.gui.widgets.bug_report_dialog import BugReportDialog
@@ -84,9 +84,9 @@ def _project(session):
     return project
 
 
-def _bug(session, project, *, status="Новый"):
+def _bug(session, project, *, status="Новый", bug_id="BUG-251126-001"):
     bug = BugReport(
-        id="BUG-251126-001",
+        id=bug_id,
         title="Broken checkout",
         description="Details",
         reproduction_steps="1. Open checkout",
@@ -103,6 +103,21 @@ def _bug(session, project, *, status="Новый"):
     session.add(bug)
     session.commit()
     return bug
+
+
+def _test_case(session, test_case_id):
+    test_case = TestCase(
+        id=test_case_id,
+        title="Checkout test",
+        preconditions="User is logged in",
+        steps="1. Open checkout",
+        expected_result="Checkout opens",
+        priority="Средний",
+        status="Готов",
+    )
+    session.add(test_case)
+    session.commit()
+    return test_case
 
 
 def test_incomplete_draft_is_saved_locally_without_network(qtbot, session):
@@ -157,6 +172,8 @@ def test_publish_requires_preview_and_disables_duplicate_start(
         session, bug.id, gitlab_controller=controller
     )
     qtbot.addWidget(dialog)
+    assert not hasattr(dialog, "sync_btn")
+    assert not hasattr(dialog, "open_gitlab_btn")
 
     dialog.preview_publish()
 
@@ -235,19 +252,82 @@ def test_sync_conflict_requires_per_field_resolution(qtbot, session, monkeypatch
         def exec(self):
             return QDialog.DialogCode.Accepted
 
+    monkeypatch.setattr("src.gui.main_window.GitLabSyncService", FakeSyncService)
     monkeypatch.setattr(
-        "src.gui.widgets.bug_report_dialog.GitLabSyncService", FakeSyncService
+        "src.gui.main_window.ConflictResolutionDialog", AcceptedConflict
     )
-    monkeypatch.setattr(
-        "src.gui.widgets.bug_report_dialog.ConflictResolutionDialog", AcceptedConflict
-    )
-    dialog = BugReportDialog(session, bug.id, gitlab_controller=controller)
-    qtbot.addWidget(dialog)
+    window = MainWindow(session=session, gitlab_controller=controller)
+    qtbot.addWidget(window)
+    window.tabs.setCurrentIndex(1)
+    window.bug_reports_table.selectRow(0)
 
-    dialog.preview_sync()
+    window.sync_selected_bug_report()
 
     assert captured == {"title": "remote"}
     assert controller.calls == 2
+
+
+def test_main_toolbar_actions_follow_tab_and_selection_count(qtbot, session):
+    project = _project(session)
+    first_bug = _bug(session, project)
+    second_bug = _bug(session, project, bug_id="BUG-251126-002")
+    for issue_iid, bug in enumerate((first_bug, second_bug), start=8):
+        session.add(
+            GitLabBinding(
+                bug_report=bug,
+                project=project,
+                sync_uid=f"00000000-0000-4000-8000-{issue_iid:012d}",
+                issue_id=100 + issue_iid,
+                issue_iid=issue_iid,
+                issue_web_url=(
+                    f"https://gitlab.internal/customer/app/-/issues/{issue_iid}"
+                ),
+                sync_state="synced",
+            )
+        )
+    _test_case(session, "TC-251126-001")
+    _test_case(session, "TC-251126-002")
+    session.commit()
+
+    window = MainWindow(session=session, gitlab_controller=_ImmediateController(session))
+    qtbot.addWidget(window)
+
+    assert not window.sync_action.isVisible()
+    assert not window.open_gitlab_action.isVisible()
+    window.test_cases_table.selectRow(0)
+    assert window.edit_btn.isEnabled()
+    assert window.edit_action.isEnabled()
+
+    selection = window.test_cases_table.selectionModel()
+    selection.select(
+        window.test_cases_table.model().index(1, 0),
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert not window.edit_btn.isEnabled()
+    assert not window.edit_action.isEnabled()
+
+    window.tabs.setCurrentIndex(1)
+    assert window.sync_action.isVisible()
+    assert window.open_gitlab_action.isVisible()
+    window.bug_reports_table.selectRow(0)
+    assert window.edit_btn.isEnabled()
+    assert window.sync_btn.isEnabled()
+    assert window.open_gitlab_btn.isEnabled()
+    assert window.edit_btn.property("warning") is True
+    assert window.sync_btn.property("sync") is True
+    assert window.open_gitlab_btn.property("gitlabOpen") is True
+
+    selection = window.bug_reports_table.selectionModel()
+    selection.select(
+        window.bug_reports_table.model().index(1, 0),
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert not window.edit_btn.isEnabled()
+    assert not window.edit_action.isEnabled()
+    assert not window.sync_btn.isEnabled()
+    assert not window.open_gitlab_btn.isEnabled()
 
 
 def test_conflict_dialog_requires_choice_for_every_field(qtbot):

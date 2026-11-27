@@ -6,7 +6,7 @@ resumable publish, explicit sync и PySide6 UX из `TASK-GL-001`–006 реал
 локально; local packaging preflight из `TASK-GL-007` выполнен, Windows/LAN
 acceptance остаётся `NOT RUN`.
 
-**Дата актуализации:** 2026-11-26
+**Дата актуализации:** 2026-11-27
 
 ## Goal
 
@@ -85,6 +85,8 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 - GitLab.com и любые внешние SaaS-хранилища.
 - Развёртывание и администрирование GitLab Self-Managed.
 - Фоновая или периодическая синхронизация.
+- Массовая синхронизация нескольких выбранных баг-репортов; она отложена до
+  v1.2 и не должна неявно запускаться при множественном выборе в v1.1.
 - Webhooks и входящие соединения к MyOwnTMS.
 - Импорт Issue, изначально созданных в GitLab.
 - Синхронизация тест-кейсов и связей между артефактами.
@@ -216,6 +218,8 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
    actual result, environment, source metadata, status, priority и severity.
 8. Текст GitLab description вне managed block сохраняется без изменений.
 9. Отсутствующий или повреждённый managed block запрещает автоматическую запись.
+10. В v1.1 команда синхронизации применяется ровно к одному выбранному
+    опубликованному баг-репорту. Массовая синхронизация планируется для v1.2.
 
 ### FR-8: Статусы и жизненный цикл
 
@@ -239,12 +243,22 @@ GitLab Issue. Передача в интернет запрещена; GitLab д
 
 1. Настройки GitLab включают origin, CA bundle, token-for-session, список
    профилей, проверку соединения и подготовку labels.
-2. Bug dialog включает проект, источник, внешний номер и sync status.
-3. Доступны действия `Сохранить локально`, `Preview и опубликовать`,
-   `Синхронизировать`, `Открыть в GitLab`.
-4. Main window показывает проект и sync status опубликованного бага.
-5. Сетевые операции выполняются вне GUI thread; окно остаётся отзывчивым.
-6. Ошибка показывает безопасное описание, HTTP status и request ID при наличии,
+2. Bug dialog включает проект, источник, внешний номер и sync status; в нём
+   доступны `Сохранить локально` и `Preview и опубликовать`.
+3. `Preview и опубликовать` остаётся в редакторе, поскольку перед публикацией
+   должны быть сохранены и проверены все редактируемые поля документа.
+4. Main window показывает project и sync status опубликованного бага. Справа от
+   `Экспорт` на вкладке баг-репортов находятся синяя кнопка
+   `Синхронизировать` и оранжевая `Открыть в GitLab`.
+5. `Редактировать` отображается жёлтой. Действие доступно только при выборе
+   ровно одного тест-кейса или баг-репорта; ограничение действует также для
+   пункта меню и сочетания клавиш.
+6. `Синхронизировать` и `Открыть в GitLab` доступны только на вкладке
+   баг-репортов, только для одного выбранного опубликованного бага и недоступны
+   при множественном выборе. `Открыть в GitLab` дополнительно требует безопасный
+   сохранённый Issue URL.
+7. Сетевые операции выполняются вне GUI thread; окно остаётся отзывчивым.
+8. Ошибка показывает безопасное описание, HTTP status и request ID при наличии,
    но не token, request body, description или имена локальных каталогов.
 
 ## Non-Functional Requirements
@@ -367,7 +381,7 @@ explicit sync service добавлены в `TASK-GL-005`.
 | TASK-GL-003 | Project profiles и label bootstrap | Implemented locally; service/API tests PASS |
 | TASK-GL-004 | Resumable publish и image uploads | Implemented locally; focused tests PASS |
 | TASK-GL-005 | Pull/push и field-level conflicts | Implemented locally; focused tests PASS |
-| TASK-GL-006 | PySide6 UX интеграции | Implemented locally; текущий GUI suite NOT RUN из-за `libEGL.so.1` |
+| TASK-GL-006 | PySide6 UX интеграции | Implemented locally; текущий GUI suite NOT RUN — `pytest`/`PySide6` отсутствуют |
 | TASK-GL-007 | Windows package и LAN acceptance | Local packaging preflight PASS; Windows/LAN NOT RUN |
 
 ## Testing and Acceptance Criteria
@@ -407,9 +421,10 @@ secret scan, `compileall` и `git diff --check` — **PASS**.
 **6**, project profiles/bootstrap — **14**, client/codec/publish — **55**,
 sync/lifecycle — **27**. Добавлены regressions для label drift перед publish,
 durable attachment removal с attachment conflict resolution и запрета возврата
-опубликованного бага в `Черновик`. В GUI-файле определено 10 focused tests,
-включая post-publish Draft guard, но текущий GUI suite — **NOT RUN**: импорт Qt
-останавливается на отсутствующей системной `libEGL.so.1`.
+опубликованного бага в `Черновик`. В GUI-файле определено 11 focused tests,
+включая post-publish Draft guard и selection-state regression, но текущий GUI
+suite — **NOT RUN**: в доступном interpreter отсутствуют `pytest` и `PySide6`.
+Исторический запуск Qt также останавливался без системной `libEGL.so.1`.
 
 Исторический Linux packaging preflight из `TASK-GL-007` остаётся PASS для
 зафиксированного в acceptance report snapshot, но bundle после последних
@@ -494,6 +509,12 @@ backup и integrity check. Alembic пока не добавляется.
 
 HTTP boundary реализуется отдельным adapter, а вызовы выполняются через
 `QThreadPool`; mapping и merge logic остаются pure Python.
+
+### DR-10: Массовая синхронизация отложена до v1.2
+
+В v1.1 Sync обрабатывает ровно один выбранный опубликованный баг. Batch preview,
+поэлементные конфликты и частичные результаты массовой синхронизации требуют
+отдельного UX и реализуются не ранее v1.2.
 
 ## Interview Log
 
