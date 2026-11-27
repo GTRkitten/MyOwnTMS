@@ -292,8 +292,8 @@ def test_main_toolbar_actions_follow_tab_and_selection_count(qtbot, session):
     window = MainWindow(session=session, gitlab_controller=_ImmediateController(session))
     qtbot.addWidget(window)
 
-    assert window.sync_btn.isHidden()
-    assert window.open_gitlab_btn.isHidden()
+    assert not window.sync_action.isVisible()
+    assert not window.open_gitlab_action.isVisible()
     window.test_cases_table.selectRow(0)
     assert window.edit_btn.isEnabled()
     assert window.edit_action.isEnabled()
@@ -308,8 +308,8 @@ def test_main_toolbar_actions_follow_tab_and_selection_count(qtbot, session):
     assert not window.edit_action.isEnabled()
 
     window.tabs.setCurrentIndex(1)
-    assert not window.sync_btn.isHidden()
-    assert not window.open_gitlab_btn.isHidden()
+    assert window.sync_action.isVisible()
+    assert window.open_gitlab_action.isVisible()
     window.bug_reports_table.selectRow(0)
     assert window.edit_btn.isEnabled()
     assert window.sync_btn.isEnabled()

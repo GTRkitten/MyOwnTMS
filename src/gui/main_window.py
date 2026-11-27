@@ -201,22 +201,22 @@ class MainWindow(QMainWindow):
         self.sync_btn = QPushButton("Синхронизировать")
         self.sync_btn.setProperty("sync", True)
         self.sync_btn.setEnabled(False)
-        self.sync_btn.setVisible(False)
         self.sync_btn.clicked.connect(self.sync_selected_bug_report)
-        toolbar.addWidget(self.sync_btn)
+        self.sync_action = toolbar.addWidget(self.sync_btn)
+        self.sync_action.setVisible(False)
 
         self.open_gitlab_btn = QPushButton("Открыть в GitLab")
         self.open_gitlab_btn.setProperty("gitlabOpen", True)
         self.open_gitlab_btn.setEnabled(False)
-        self.open_gitlab_btn.setVisible(False)
         self.open_gitlab_btn.clicked.connect(self.open_selected_bug_report_in_gitlab)
-        toolbar.addWidget(self.open_gitlab_btn)
+        self.open_gitlab_action = toolbar.addWidget(self.open_gitlab_btn)
+        self.open_gitlab_action.setVisible(False)
 
         self.gitlab_progress = QProgressBar()
         self.gitlab_progress.setRange(0, 0)
         self.gitlab_progress.setMaximumWidth(100)
-        self.gitlab_progress.setVisible(False)
-        toolbar.addWidget(self.gitlab_progress)
+        self.gitlab_progress_action = toolbar.addWidget(self.gitlab_progress)
+        self.gitlab_progress_action.setVisible(False)
     
     def create_search_panel(self):
         """Создает панель поиска и фильтрации"""
@@ -633,8 +633,11 @@ class MainWindow(QMainWindow):
         self.edit_action.setEnabled(can_edit)
         self.delete_btn.setEnabled(selection_count > 0 and not self._gitlab_busy)
 
-        self.sync_btn.setVisible(is_bug_tab)
-        self.open_gitlab_btn.setVisible(is_bug_tab)
+        self.sync_action.setVisible(is_bug_tab)
+        self.open_gitlab_action.setVisible(is_bug_tab)
+        self.gitlab_progress_action.setVisible(
+            is_bug_tab and self._gitlab_busy
+        )
         if not is_bug_tab or not has_single_selection or self._gitlab_busy:
             self.sync_btn.setEnabled(False)
             self.open_gitlab_btn.setEnabled(False)
@@ -871,7 +874,6 @@ class MainWindow(QMainWindow):
 
     def _set_gitlab_busy(self, busy):
         self._gitlab_busy = busy
-        self.gitlab_progress.setVisible(busy)
         self._update_action_states()
 
     def _start_gitlab_operation(self, operation, succeeded):
